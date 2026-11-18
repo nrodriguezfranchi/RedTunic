@@ -1,7 +1,9 @@
+<img width="1254" height="1254" alt="RedTunicAMD" src="https://github.com/user-attachments/assets/de0fc6c1-cd8c-46aa-8c7f-a68af47a372c" />
+
 # Red Tunic
 
 **Zelda OOT Remake Recomp.** An unofficial static recompilation of *The Legend of Zelda: Ocarina of Time* (the Switch 2
-remake) into a native Windows game: the game's code is translated to PC code and compiled on your machine, with no emulator. This is specifically optimised for performance, stability and rendering on AMD systems and AMD Radeon GPUs.
+remake) into a native Windows game: the game's code is translated to PC code and compiled on your machine, with no emulator. This is specifically optimised for performance, stability and rendering on AMD systems and AMD Radeon GPUs. It still does however benefit other non-AMD systems with much improved performance compared to other Recomps.
 
 **No game files are in this repository.** ReLink builds the game on your PC from your own copy.
 
@@ -40,10 +42,6 @@ after an update of ReLink that changes the renderer's shader code or state (0.6.
 same way, whatever its RAM. A PC that ran an earlier version with 20 GB of RAM or more has a pipeline cache file in the game
 folder, `mkw_vk_pipelines.bin` (800 MB and more), that nothing reads any more: since 0.7.8 the game deletes it at its first
 start, unless `RX_VK_LEAN_PIPELINES=0` in `relink_env.txt` brings back the older start, which uses it.
-
-![Installing](docs/install.png)
-
-![The first start: the night ends as the game gets ready](docs/loading.png)
 
 ### What your PC needs
 
