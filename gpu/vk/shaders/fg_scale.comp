@@ -1,4 +1,7 @@
 #version 450
+#ifdef FG_SCALE_FP16
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#endif
 // the frame to the window's size (the Insert menu's Upscaling, Sharpness): Catmull-Rom or Lanczos 2, or the linear filter (each
 // stretched over the picture's pixels one window pixel covers when the picture is the larger), then
 // a contrast-adaptive sharpen in the manner of AMD FidelityFX RCAS that cannot go past the light around the pixel, so it adds no halos,
@@ -112,7 +115,13 @@ vec3 sharpen(vec3 c, vec3 n, vec3 s, vec3 w, vec3 e, float amount) {
     const vec3 to_white = (1.0 - hi) / max(4.0 - 4.0 * lo4, vec3(1.0 / 1024.0));
     const vec3 room = min(to_black, to_white);
     const float lobe = -clamp(min(min(room.r, room.g), room.b), 0.0, kMaxLobe) * clamp(amount, 0.0, 1.0);
+#ifdef FG_SCALE_FP16
+    // Keep the contrast bounds and normalization in FP32. Use packed math for the SDR color taps.
+    const f16vec3 neighbours = f16vec3(n) + f16vec3(s) + f16vec3(w) + f16vec3(e);
+    const vec3 sharp = vec3(f16vec3(c) + float16_t(lobe) * neighbours) / (1.0 + 4.0 * lobe);
+#else
     const vec3 sharp = (c + lobe * (n + s + w + e)) / (1.0 + 4.0 * lobe);
+#endif
     // (and no further than the lightest and darkest pixel around it: an edge gets steeper, no halo beside it)
     return clamp(sharp, lo, hi);
 }

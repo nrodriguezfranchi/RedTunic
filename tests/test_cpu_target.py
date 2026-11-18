@@ -146,8 +146,9 @@ class NativeCpu(unittest.TestCase):
         self.assertIn('if not os.environ.get("RX_MARCH") and MARCH == "x86-64-v3"', block)
         self.assertIn('CPU += ["-DHOOKSHOT_NATIVE_CPU=" + _native]', block)
         self.assertIn("sys.exit(", block)   # (an RX_MARCH=native that clang can't resolve stops the build)
-        # (native tunes for the CPU as well: no -mtune of our own, which would override it)
-        self.assertNotIn("-mtune", build)
+        # Red Tunic tunes Ryzen builds without extending the x86-64-v3 instruction set.
+        self.assertIn('CPU.append("-mtune=" + tune)', block)
+        self.assertIn('re.fullmatch(r"znver[1-5]"', block)
         self.assertNotIn("host_mtune", build)
 
 

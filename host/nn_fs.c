@@ -487,8 +487,15 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
             }
         }
     }
+    DWORD flags = FILE_ATTRIBUTE_NORMAL;
+#ifdef _WIN32
+    // Compressed read-only assets are streamed in order. Keep ordinary handles at the OS default.
+    const size_t path_len = strlen(path);
+    if (!writable && !want_write && path_len > 3 && !_stricmp(path + path_len - 3, ".zs"))
+        flags |= FILE_FLAG_SEQUENTIAL_SCAN;
+#endif
     HANDLE h = CreateFileA(path, GENERIC_READ | (want_write ? GENERIC_WRITE : 0), FILE_SHARE_READ | FILE_SHARE_WRITE,
-                           NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+                           NULL, OPEN_EXISTING, flags, NULL);
     if (away) hos_vcore_back();
     if (h == INVALID_HANDLE_VALUE) {
         if (hos_trace || fs_trace()) hos_log("fs: OpenFile(%s): not found", g);

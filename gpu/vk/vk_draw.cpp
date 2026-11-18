@@ -57,7 +57,9 @@
 #include "linux_pressure.h"
 #include "pcache_stamp.h"
 #include "pcache_load.h"     // (hookshot: whether the pipeline cache file is read)
-#ifndef _WIN32
+#ifdef _WIN32
+#include <io.h>              // (_chsize_s: trim incomplete pipeline journal entries)
+#else
 #include <unistd.h>          // (sysconf: the RAM, pcache_load_off)
 #endif
 #include "vk_reactive.h"   // (the upscalers' reactive mask: the scene copied before its transparent draws)
@@ -1765,7 +1767,15 @@ VkComputePipelineCreateInfo compute_pipeline_info(const Program& q, bool noopt) 
     pin_compute(ci.stage, q);
     ci.layout = q.layout;
     static const bool noopt_on = env_on("RX_VK_NOOPT");
-    if (noopt && noopt_on) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
+    static const uint64_t amd_noopt_key = []() -> uint64_t {
+        const char* value = getenv("RX_VK_AMD_COMPUTE_NOOPT_KEY");
+        if (!value || std::strlen(value) != 16) return 0;
+        for (const char* p = value; *p; ++p)
+            if (!std::strchr("0123456789abcdefABCDEF", *p)) return 0;
+        return std::strtoull(value, nullptr, 16);
+    }();
+    const bool targeted = dev.props.vendorID == 0x1002 && amd_noopt_key && amd_noopt_key == q.key;
+    if (targeted || (noopt && noopt_on)) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
     return ci;
 }
 /// (hookshot) Before play on Intel's one-at-a-time builds (precompile_run, precompile_warm): ci asked without the optimizer, the
@@ -6625,9 +6635,15 @@ uint16_t draw_hazards(VkCommandBuffer cmd, const Program& p, const NvnState& s, 
         return at.depth == t ? 8 : -1;
     };
     const char* kind = nullptr;
-    for (const Texture* t : gfx_sampled()) {
-        const int k = slot_of(t);
-        if (k >= 0 && (ps.written >> k & 1) && !(writes >> k & 1)) { kind = "samples a target the pass wrote"; break; }
+    const uint16_t prior_writes = ps.written & ~writes;
+    if (prior_writes) {
+        for (const Texture* t : gfx_sampled()) {
+            const int k = slot_of(t);
+            if (k >= 0 && (prior_writes >> k & 1)) {
+                kind = "samples a target the pass wrote";
+                break;
+            }
+        }
     }
     if (!kind && writes_sampled_target(writes, ps.sampled_targets))
         kind = "writes a target an earlier draw sampled";
@@ -8208,12 +8224,14 @@ thread_local VkBuffer mesh_conv_buf = VK_NULL_HANDLE;   // (the converted record
 thread_local uint64_t mesh_conv_off = 0;
 bool mesh_indirect_convert(VkCommandBuffer cmd, const DrawArgs& d) {
     mesh_conv_buf = VK_NULL_HANDLE;
+    if (!d.indirect) return false;
     static const uint32_t word = getenv("RX_VK_MESH_IND_COUNT_WORD") ? (uint32_t)atoi(getenv("RX_VK_MESH_IND_COUNT_WORD")) & 3 : 0;
     // (amd-fix: the rewrite with the firsts in the draw does it, RX_VK_MESH_ARGS; this one drew every draw from its first 0)
     static const bool rewrite = getenv("RX_VK_MESH_ARGS") && atoi(getenv("RX_VK_MESH_ARGS")) != 0;   // (sharkiix version: off, as upstream)
-    if (rewrite || !d.mesh || !d.indirect) return false;
-    PROF_EXACT();   // (a pass ended and three barriers: not one of the cheap per-draw steps PROF_DRAW samples)
-    const uint32_t n = (uint32_t)std::clamp(d.max, 1, 4096);
+    if (rewrite) return false;
+    PROF_EXACT();
+    // The compute fallback dispatches from the first record. Native mesh draws may consume the whole list.
+    const uint32_t n = dev.mesh_shader ? (uint32_t)std::clamp(d.max, 1, 4096) : 1u;
     const uint32_t stride = d.stride > 0 ? (uint32_t)d.stride : 8;
     const BufferRef args = gpu_buffer_bind(d.indirect, (uint64_t)(n - 1) * stride + 4 * (word + 1), false);
     if (!args) return false;
@@ -8238,22 +8256,29 @@ bool mesh_indirect_convert(VkCommandBuffer cmd, const DrawArgs& d) {
     mb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, mb.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
     mb.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, mb.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
     vkCmdPipelineBarrier2(cmd, &di);
-    vkCmdFillBuffer(cmd, mesh_ring, off, (uint64_t)n * 12, 1u);
-    mb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, mb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    mb.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, mb.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    vkCmdPipelineBarrier2(cmd, &di);
-    std::vector<VkBufferCopy> regions(n);
-    for (uint32_t i = 0; i < n; i++) regions[i] = {args.offset + (uint64_t)i * stride + 4 * word, off + (uint64_t)i * 12, 4};
-    vkCmdCopyBuffer(cmd, args.buffer, mesh_ring, n, regions.data());
+    VkBufferCopy first{args.offset + 4 * word, off, 4};
+    const VkBufferCopy* regions = &first;
+    std::vector<VkBufferCopy> list;
+    if (n == 1) {
+        // The fill writes y and z and the copy writes x. Both become visible at the indirect-read barrier below.
+        vkCmdFillBuffer(cmd, mesh_ring, off + 4, 8, 1u);
+    } else {
+        vkCmdFillBuffer(cmd, mesh_ring, off, (uint64_t)n * 12, 1u);
+        mb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+        mb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        mb.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier2(cmd, &di);
+        list.resize(n);
+        for (uint32_t i = 0; i < n; i++)
+            list[i] = {first.srcOffset + (uint64_t)i * stride, off + (uint64_t)i * 12, 4};
+        regions = list.data();
+    }
+    vkCmdCopyBuffer(cmd, args.buffer, mesh_ring, n, regions);
     {   // (diagnosis, default off) RX_VK_G3_MESHCOUNT=1: the same counts into a host-visible twin of the ring, for mesh_count_note
         static const bool on = env_on("RX_VK_G3_MESHCOUNT");
         if (on) {
             if (!mesh_dbg && !create_buffer(kMeshRing, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, mesh_dbg, mesh_dbg_mem, &mesh_dbg_ptr)) mesh_dbg = VK_NULL_HANDLE;
-            if (mesh_dbg) {
-                std::vector<VkBufferCopy> r2(n);
-                for (uint32_t i = 0; i < n; i++) r2[i] = {args.offset + (uint64_t)i * stride + 4 * word, off + (uint64_t)i * 12, 4};
-                vkCmdCopyBuffer(cmd, args.buffer, mesh_dbg, n, r2.data());
-            }
+            if (mesh_dbg) vkCmdCopyBuffer(cmd, args.buffer, mesh_dbg, n, regions);
         }
     }
     mb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, mb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
@@ -9126,7 +9151,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     PROF_HOT(PROF_DRAW);
     FINE_N(FC_DRAWS, 1);
     stats_tick();
-    mesh_indirect_convert(cmd, d);   // (EvilOOT: before the pass opens; sets mesh_conv_buf for the mesh draw below)
+    if (d.mesh) mesh_indirect_convert(cmd, d);   // (before the pass opens; sets mesh_conv_buf for this mesh draw)
     VkPrimitiveTopology topo = kMeshDrawTopology;
     if (!d.mesh && !topology(d.prim, topo)) {
         static int logged[32];
@@ -9698,9 +9723,11 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     FineScope fine_track(FT_CMD_TRACK);
     ps.prog = p.key;
     if (!ps.first_prog) ps.first_prog = p.key;
+    // Pass hazards use the target bitmask. The full set of sampled textures is for diagnostics only.
+    const bool trace_samples = pass_trace_on() || gprof_on();
     for (const Texture* t : gfx_sampled()) {
-        if (std::find(ps.sampled.begin(), ps.sampled.end(), t) != ps.sampled.end()) continue;
-        ps.sampled.push_back(t);
+        if (trace_samples && std::find(ps.sampled.begin(), ps.sampled.end(), t) == ps.sampled.end())
+            ps.sampled.push_back(t);
         int slot = -1;
         for (int i = 0; i < at.n; i++)
             if (at.color[i] == t) { slot = i; break; }

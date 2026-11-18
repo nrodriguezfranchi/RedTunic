@@ -1061,15 +1061,14 @@ struct {
 /// 34.8 fps there against 45.8 with the copy. A query the copy found not done (never begun: its draw did not draw), or one
 /// whose recording ended without the copy, is read from the pool once its submission is done, as before. A count reads
 /// kOccUnread until its copy has written it, whichever of its two words the GPU writes first. The copies cost GPU time (~2 ms
-/// a frame in the market on the B580, ~1,400 queries), so they are on by default only where they were measured: Intel's
-/// Windows driver on a discrete GPU (Arc). An iGPU, mostly held back by the GPU, or another driver whose pool reads cost
-/// less, may lose by them (RX_VK_OCC_COPY=1: on there too). Off with the parallel replay (its workers record the queries) and
-/// without coherent host memory. RX_VK_OCC_COPY=0: read from the pool
+/// a frame in the market on the B580, ~1,400 queries). Red Tunic also enables copies for AMD integrated graphics on Windows
+/// to avoid the driver cost of frequent CPU query reads. Off with parallel replay and without coherent host memory.
+/// RX_VK_OCC_COPY=0 reads from the pool.
 int par_threads();
 bool occ_copy_wanted() {
     static const bool on = [] {
         if (par_threads() != 0) return false;
-        return dev.policy.occ_copy;   // (device_policy.h: Intel's Windows driver on a discrete GPU, then the switch)
+        return dev.policy.occ_copy;
     }();
     return on;
 }

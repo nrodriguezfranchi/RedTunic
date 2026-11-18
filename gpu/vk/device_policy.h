@@ -383,8 +383,8 @@ struct DevicePolicy {
     // Mesa's Intel driver, with dynamic indexing of storage buffer arrays: the tables searched in loops, as Mesa inlines
     // the written-out form (Windows not tried). RX_VK_GM_LOOP. Site (vk_coopmat.cpp table_loop_wanted), step 7
     bool global_table_loop = false;
-    // Intel's Windows driver on a discrete card: occlusion counts copied to host memory, not read from the pool (an Arc
-    // B580, 34.8 -> 45.8 fps in the market; seen on driver 101.9154). Off with the parallel replay, at the site.
+    // Windows AMD integrated graphics and Intel discrete graphics: copy occlusion counts to host memory.
+    // An Arc B580 went from 34.8 to 45.8 fps in the Market on driver 101.9154. Off with parallel replay, at the site.
     // RX_VK_OCC_COPY. Read (vk_replay.cpp occ_copy_wanted)
     bool occ_copy = false;
     // Intel on Windows, the Arc B-series from driver 101.9154: the Intel shader compiles row's Auto is side by side (a
@@ -547,7 +547,8 @@ inline DevicePolicy device_policy(const DeviceFacts& f) {
     p.batch_submits = f.radv() && !f.radv_gcn();
     p.mma_unroll_try = f.radv();
     p.global_table_loop = f.driver_id == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA && f.storage_buffer_array_dynamic_indexing;
-    p.occ_copy = f.driver_id == VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS && f.discrete();
+    p.occ_copy = f.windows && ((f.amd() && f.integrated()) ||
+                              (f.driver_id == VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS && f.discrete()));
     p.fsr4_tune = f.amd();
     p.gpu_clock_peak = f.amd() && f.deck_apu();
     p.presenter_queue = f.nvidia();

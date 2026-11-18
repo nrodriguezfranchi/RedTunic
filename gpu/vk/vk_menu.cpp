@@ -1129,6 +1129,11 @@ void apply_auto() {
     if (c.tier == 1) opts.upscale = 0, opts.sharpness = 0;   // (the plain scale, as RX_VK_LOW_SPEC: the lightest)
     opts.handheld = 0;   // (docked: the handheld profile gave a GTX 1050 a black picture; the Render resolution lightens the card)
     if (c.resolution) opts.resolution = ur::snap_render(c.upscaler, c.resolution);
+    if (c.fixed_resolution) {
+        if (env_on("RX_VK_SHARPEN_FP16")) opts.sharpness = 20;
+        opts.gfx_grass = 75;
+        opts.gfx_shadows = 75;
+    }
     auto_tuned = 0;   // (chosen again: measured again in play)
     auto_tuning = {};
     opts.preset = kAutoPreset;   // (apply_preset set the tier's number)
@@ -4625,7 +4630,7 @@ void draw_options(ui::Ctx& c) {
     }
     {   // (which build, at the banner's left, so a report can say it without opening the log: as players see it, version_text,
         // "Hookshot v3.0.0-rc.1" or "Hookshot Nightly 46 · 434712bb"; the log and the bug report keep the whole name)
-        std::string ver = std::string("Hookshot ") + version_text(HOOKSHOT_VERSION);
+        std::string ver = std::string("Red Tunic ") + version_text(HOOKSHOT_VERSION);
         const float room = (c.w - total) * 0.5f - 60 * s - c.safe, px = 15 * s;
         const auto width = [&](float p) { return ui::size_of(c.f.body, p, ver.c_str()).x; };
         // (still too long, as a source build's "v2.0.11-821-g7b81752-dirty" since the Audio tab: at Small and Medium smaller
@@ -5682,7 +5687,7 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
     if (foot) {   // (the footer, at the column's foot: the version, as the banner says it; at Dev the CPU, the GPU, its driver. A line
         // too long for the column's width loses its end)
         static std::string cpu, gpu, drv, fit[4];
-        static const std::string ver = std::string("Hookshot ") + version_text(HOOKSHOT_VERSION);
+        static const std::string ver = std::string("Red Tunic ") + version_text(HOOKSHOT_VERSION);
         static float fit_w = 0;
         if (gpu.empty()) cpu = hardware_cpu_name(bug_report::cpu_name()), gpu = hardware_gpu_name(device_name_text()), drv = driver_text(), fit_w = 0;
         if (fit_w != gw) {
@@ -5952,6 +5957,62 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
     }
 }
 
+// The loading screen's fire uses colored strips and embers in the existing UI batch.
+// Time drives the movement, so a slow compile or a change in refresh rate cannot change its speed.
+void draw_startup_fire(ui::Ctx& c, float seconds) {
+    const float h = c.h, w = c.w;
+    const float bed = h * 0.18f;
+    c.d->AddRectFilledMultiColor(ImVec2(0, h - bed), ImVec2(w, h),
+        ui::rgba(74, 12, 13, 0), ui::rgba(74, 12, 13, 0),
+        ui::rgba(110, 16, 17, 212), ui::rgba(110, 16, 17, 212));
+
+    constexpr int rows = 7;
+    const ImVec2 uv = ImGui::GetFontTexUvWhitePixel();
+    const int tongues = std::clamp(static_cast<int>(w / h * 16), 12, 48);
+    const float stride = w / tongues;
+    for (int layer = 0; layer < 3; ++layer) {
+        for (int i = -1; i <= tongues; ++i) {
+            const float seed = static_cast<float>(i * 17 + layer * 31);
+            const float phase = seconds * (1.8f + 0.24f * layer) + seed;
+            const float flicker = 0.55f + 0.26f * std::sin(phase) + 0.13f * std::sin(phase * 1.63f);
+            const float height = bed * (1.0f - layer * 0.22f) * (0.33f + flicker);
+            const float base = (i + 0.38f * layer) * stride + 0.19f * stride * std::sin(phase * 0.69f);
+            const float half_width = stride * (0.75f - layer * 0.13f);
+            c.d->PrimReserve((rows - 1) * 12, rows * 3);
+            const auto first = static_cast<ImDrawIdx>(c.d->_VtxCurrentIdx);
+            for (int row = 0; row < rows - 1; ++row) {
+                for (int side = 0; side < 2; ++side) {
+                    const auto a = static_cast<ImDrawIdx>(first + row * 3 + side);
+                    c.d->PrimWriteIdx(a); c.d->PrimWriteIdx(a + 1); c.d->PrimWriteIdx(a + 3);
+                    c.d->PrimWriteIdx(a + 1); c.d->PrimWriteIdx(a + 4); c.d->PrimWriteIdx(a + 3);
+                }
+            }
+            for (int row = 0; row < rows; ++row) {
+                const float u = static_cast<float>(row) / (rows - 1);
+                const float x = base + stride * u * 0.62f * std::sin(phase + u * 2.2f);
+                const float y = h - height * u;
+                const float width = half_width * (1.0f - u) * (0.78f + 0.22f * std::sin(phase + u * 4.0f));
+                const int alpha = static_cast<int>((1.0f - u) * (118 - 21 * layer));
+                const ImU32 color = ui::rgba(220 + 16 * layer, 31 + 48 * layer - static_cast<int>(24 * u),
+                    16 + 10 * layer, alpha);
+                const ImU32 edge = color & ~IM_COL32_A_MASK;
+                c.d->PrimWriteVtx(ImVec2(x - width, y), uv, edge);
+                c.d->PrimWriteVtx(ImVec2(x, y), uv, color);
+                c.d->PrimWriteVtx(ImVec2(x + width, y), uv, edge);
+            }
+        }
+    }
+    for (int i = 0; i < 28; ++i) {
+        const float travel = seconds * (0.26f + 0.014f * (i % 7)) + i * 0.618034f;
+        const float u = travel - std::floor(travel);
+        const float x = w * ((i + 0.5f) / 28.0f) + bed * 0.14f * std::sin(i + u * 4.0f);
+        const float y = h - bed * (0.12f + u * (0.62f + 0.16f * (i % 4)));
+        const float radius = std::max(0.8f, h / 720.0f) * (1.9f - u);
+        const int alpha = static_cast<int>(148 * std::sin(u * 3.14159265f) * (1.0f - u));
+        c.d->AddCircleFilled(ImVec2(x, y), radius, ui::rgba(255, 177, 86, alpha), 6);
+    }
+}
+
 /// The start-up screen: the logo, the wordmark, what the start is doing, a bar, on a warm dark. A little below the middle; what
 /// is under the logo at 0.86 of the logo's scale. startup_fade, 0 to 1, darkens it all to black as it ends
 void draw_startup(ui::Ctx& c) {
@@ -5961,14 +6022,21 @@ void draw_startup(ui::Ctx& c) {
         v = startup;
     }
     const float s = c.s, w = c.w, h = c.h, cx = w * 0.5f, k = s * 0.86f;   // (k: the scale of what is under the logo)
-    c.d->AddRectFilled(ImVec2(0, 0), ImVec2(w, h), ui::rgba(14, 10, 6));
+    c.d->AddRectFilled(ImVec2(0, 0), ImVec2(w, h), ui::rgba(17, 8, 10));
+    const int64_t now = prof_now();
+    static int64_t fire_since = now, last_frame = now;
+    static float shown_fraction = 0;
+    const float dt = static_cast<float>((now - last_frame) / 1e9);
+    if (dt > 1.0f) { fire_since = now; shown_fraction = 0; }
+    last_frame = now;
+    draw_startup_fire(c, static_cast<float>((now - fire_since) / 1e9));
     const float lh = 112 * s, top = h * 0.5f - 176 * s;
-    for (int i = 40; i >= 1; i--) c.d->AddCircleFilled(ImVec2(cx, top + lh * 0.5f + 70 * s), h * 0.021f * i, ui::rgba(46, 33, 18, 4), 128);
+    for (int i = 24; i >= 1; i--) c.d->AddCircleFilled(ImVec2(cx, top + lh * 0.5f + 70 * s), h * 0.033f * i, ui::rgba(74, 24, 21, 5), 64);
     float aspect = 1;
     ImTextureData* logo = ui::logo(&aspect);
     if (logo) c.d->AddImage(logo->GetTexRef(), ImVec2(cx - lh * aspect * 0.5f, top), ImVec2(cx + lh * aspect * 0.5f, top + lh));
     float y = top + lh + 16 * s;
-    ui::spaced(c, c.f.heading, 42 * k, ImVec2(cx, y), ui::rgba(246, 232, 204), "HOOKSHOT", 6 * k);
+    ui::spaced(c, c.f.heading, 42 * k, ImVec2(cx, y), ui::rgba(246, 232, 204), "RED TUNIC", 6 * k);
     ui::flourish(c, cx - 190 * k, cx + 190 * k, y + 66 * k, ui::kAccent);
     ui::text_centre(c, c.f.body, 14.5f * k, ImVec2(cx, y + 78 * k), ui::kDim, v.version.c_str());
     if (!v.title.empty()) {
@@ -5982,7 +6050,10 @@ void draw_startup(ui::Ctx& c) {
         const float x0 = cx - 270 * k, x1 = cx + 270 * k, by = y + 64 * k;
         float under = by;
         if (v.fraction >= 0) {   // (the bar as a value cell: a dark cell, gold inside, the percentage on it)
-            const float bh = 26 * k, in = 4 * k, fx = x0 + in + (x1 - x0 - 2 * in) * (float)std::min(v.fraction, 1.0);
+            const float target = static_cast<float>(std::clamp(v.fraction, 0.0, 1.0));
+            if (target < shown_fraction || target == 1.0f) shown_fraction = target;
+            else shown_fraction += (target - shown_fraction) * (1.0f - std::exp(-12.0f * dt));
+            const float bh = 26 * k, in = 4 * k, fx = x0 + in + (x1 - x0 - 2 * in) * shown_fraction;
             c.d->AddRectFilled(ImVec2(x0, by), ImVec2(x1, by + bh), ui::kCellDark);
             c.d->AddRect(ImVec2(x0, by), ImVec2(x1, by + bh), ui::kEdge, 0, std::max(1.0f, s));
             if (fx > x0 + in) ui::gold(c, ImVec2(x0 + in, by + in), ImVec2(fx, by + bh - in));
@@ -6236,6 +6307,14 @@ void menu_auto_for_gpu(const VkPhysicalDeviceProperties& props, ::auto_settings:
         return;
     }
     apply_auto();   // (the hardware changed)
+    if (first && auto_choice.fixed_resolution &&
+        !getenv("HOS_OUTPUT_RES") && !getenv("HOS_HANDHELD")) {
+        // The host reads this row before Vulkan picks an adapter, so it takes effect at the next launch.
+        opts.output_res = output_choice_of(1920, 1080);
+        opts.ultrawide = 0;
+        outputs_sync();
+        logf("vk: Red Tunic AMD APU: selected 1920x1080 output with 1280x720 internal rendering for the next launch");
+    }
     // (a row that takes a restart Auto sets, the Profile (docked), applies at the next start, a first start's too: host/hos_main.c
     // read it at boot, before the device, and this run keeps what menu_init recorded. It is Auto's, not the player's: closing the
     // menu does not ask to restart for it, as after Later. The row still says After restart, and a change of the player's own to
@@ -6634,7 +6713,7 @@ void menu_auto_tune(double gpu_ms, double draws, double fps) {
             return;
         }
     }
-    if (!on || auto_tuned == auto_for || opts.framegen || tuning.done) return;
+    if (!on || auto_choice.fixed_resolution || auto_tuned == auto_for || opts.framegen || tuning.done) return;
     // (the frame time the game runs to: the cap it started with, HOS_FPS_MAX over it, or the display's refresh with V-Sync On;
     // as the FPS counter's line. Uncapped without V-Sync: the display's refresh, else 60)
     const double target = fps_target_ms();

@@ -222,7 +222,7 @@ static class Updater
             return;
         }
         // (already the new release, or just downloaded: no second download)
-        if (fetched || (tag != null && tools.Version == tag))
+        if (tools.RedTunicRelease || fetched || (tag != null && tools.Version == tag))
         {
             w.UpdateBuild(tools, folder);
             return;

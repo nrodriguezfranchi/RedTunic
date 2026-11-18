@@ -47,6 +47,7 @@
 #include "vk_jobs.h"
 #include "gone_ring.h"   //
 #include "texture_budget.h"
+#include "auto_settings.h"
 #include "texture_ahead.h"
 #include "vk_paths.h"
 
@@ -3485,7 +3486,13 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
         // (any format of the class may be a view: attachments and storage where one of them can)
         flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
         x.usage |= VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-        if (x.samples == VK_SAMPLE_COUNT_1_BIT) x.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+        // AMD may keep attachment writes compressed when the image cannot be written through a storage view.
+        static const bool lean_targets = env_on("RX_VK_RT_NO_STORAGE") && dev.props.vendorID == 0x1002;
+        const bool attachment_only = lean_targets && as_target && !x.sparse &&
+            d.target == NVN_TEXTURE_TARGET_2D && x.levels == 1 &&
+            (d.flags & NVN_TEXTURE_FLAGS_COMPRESSIBLE) &&
+            !(d.flags & (NVN_TEXTURE_FLAGS_IMAGE | NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET));
+        if (x.samples == VK_SAMPLE_COUNT_1_BIT && !attachment_only) x.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
     } else {
         // Raw storage views address one compressed block per texel (8 or 16 bytes).
         flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT |
@@ -3930,7 +3937,9 @@ bool game_order() {
 void pass_start_barrier(VkCommandBuffer cmd) {
     static const bool game = [] {
         const char* e = getenv("RX_VK_PASS_BARRIER");
-        const bool on = e ? !strcmp(e, "game") : game_order();
+        const bool on = e ? !strcmp(e, "game") :
+            (::auto_settings::red_tunic_apu(dev.props.vendorID,
+                dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) || game_order());
         if (on) logf("vk: RX_VK_PASS_BARRIER=game: a draw pass right after another, no barrier of the game's between, waits in its fragment stages only");
         return on;
     }();
@@ -6438,6 +6447,10 @@ void texture_frame(uint64_t completed) {
         own = getenv("RX_VK_VRAM_MB") ? (uint64_t)atoi(getenv("RX_VK_VRAM_MB")) << 20
               : igpu                 ? texture_rule::integrated_bytes(a, device_vram_bytes())
                                      : texture_rule::dedicated_bytes(a, device_vram_bytes(), system_ram_bytes());
+        if (!getenv("RX_VK_VRAM_MB") && ::auto_settings::red_tunic_apu(dev.props.vendorID, igpu)) {
+            own = std::min<uint64_t>(own, 1024 * texture_rule::kMB);
+            logf("vk: Red Tunic AMD APU: texture cache ceiling %llu MB", (unsigned long long)(own >> 20));
+        }
         if (!igpu)   // (the integrated GPUs' own line follows, with their caps by the system's RAM)
             logf("vk: texture budget: %llu MB (driver allows %llu MB, the card has %llu MB, RAM %llu MB%s)",
                  (unsigned long long)(own >> 20), (unsigned long long)(a >> 20), (unsigned long long)(device_vram_bytes() >> 20),
@@ -6793,8 +6806,8 @@ void texture_frame(uint64_t completed) {
     if (no_evict || (sweep && frame_no % dead_every)) return;
     std::vector<std::pair<uint64_t, Texture*>> order;
     order.reserve(textures.size());
+    const size_t textures_before = textures.size();
     for (auto& kv : textures) order.push_back({kv.second->last_frame, kv.second.get()});
-    std::sort(order.begin(), order.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
     // (the rendered textures by where their storage starts, for drawn_over_shifted)
     std::vector<const Texture*> by_start;
     for (auto& [last, tex] : order)
@@ -6887,6 +6900,14 @@ void texture_frame(uint64_t completed) {
     }
     const uint64_t need_unused = sweep ? std::max<uint64_t>(120, min_unused) : min_unused;
     const uint64_t need_dead = std::min(need_unused, dead_min_unused);
+    // Live textures above still contribute to overlap checks and finalized accounting, but cannot be evicted.
+    std::erase_if(order, [&](const auto& entry) {
+        const auto& [last, tex] = entry;
+        const uint64_t unused = frame_no - last;
+        return unused < need_dead || tex->last_value > completed ||
+               (!tex->gpu_written && (sweep || unused < need_unused));
+    });
+    std::sort(order.begin(), order.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
     static uint64_t n_dead, b_dead, dead_logged_at;
     // (hookshot) the textures to go are chosen first and destroyed after; the write-backs among them go to the GPU in a few
     // batches (flush_textures), not one submission and one wait each: a sweep of 500 at a scene load stalled for seconds
@@ -7065,7 +7086,7 @@ void texture_frame(uint64_t completed) {
              "passes", (unsigned long long)(n_dead + st_dead_swept), (unsigned long long)((b_dead + st_dead_swept_bytes) >> 20),
              (unsigned long long)st_dead_swept, (unsigned long long)(st_dead_swept_bytes >> 20));
     }
-    const size_t n = order.size() - textures.size();
+    const size_t n = textures_before - textures.size();
     if (n) {
         char why[160];
         evict_reason::describe(tally, why, sizeof why);

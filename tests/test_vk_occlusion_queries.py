@@ -13,8 +13,8 @@ The real code is cut out of the sources and compiled against a fake query pool, 
   pass began, or whose vertex input was not all bound, or that is split into task batches, begins no query, and its
   report stays visible; every query is begun at most once;
 - occ_queries_on() in its own process per environment: RX_VK_OCC_FIXED wins over RX_VK_OCC_QUERIES=1, and the queries
-  stay on with RX_VK_ASYNC=1 (the render thread); occ_copy_wanted() likewise: the copies on by default with Intel's
-  Windows driver on a discrete GPU only, RX_VK_OCC_COPY either way, off with the parallel replay.
+  stay on with RX_VK_ASYNC=1 (the render thread); occ_copy_wanted() likewise: the copies on by default for Windows AMD integrated graphics
+  and Intel discrete graphics, RX_VK_OCC_COPY either way, off with the parallel replay.
 
 The rest is checked in the source: where the helpers are called, every draw command in draw() preceded by its query's
 issue with no way out between, the guard made after StatsQuery, the stopped queues' reports made visible.
@@ -100,7 +100,7 @@ void logf(const char*, ...) {}
 '''
 
 FIXTURE = COMMON + r'''
-struct { VkDevice device = nullptr; bool occlusion_precise = true; int driver_id = 5; struct { int deviceType = 2; } props; } dev;
+struct { VkDevice device = nullptr; bool occlusion_precise = true; int driver_id = 5; struct { int deviceType = 2; } props; struct { bool occ_copy = true; } policy; } dev;
 struct NvnState {
     bool render_enabled = true, raster_discard = false;
     uint64_t occ_next = 0, occ_first = 0, occ_limit = 0;
@@ -746,8 +746,8 @@ SWITCH_CASES = [
     ({"RX_VK_ASYNC": "1"}, 1),   # (the render thread keeps them; no async_on() here: occ_queries_on must not ask it)
 ]
 
-# occ_copy_wanted() alone (RX_VK_OCC_COPY): on by default with Intel's Windows driver on a discrete GPU only, where it was
-# measured; the switch either way; off with the parallel replay. FAKE_GPU: the driver's VkDriverId and the deviceType
+# occ_copy_wanted() alone (RX_VK_OCC_COPY): Windows AMD integrated and Intel discrete defaults, explicit overrides,
+# and the parallel replay guard. FAKE_GPU: the driver's VkDriverId and the deviceType
 # (the default and the switch are device_policy.h's, occ_copy, which occ_copy_wanted reads: the fixture makes that GPU's
 # policy with the real environment, then asks the function cut from vk_replay.cpp. Not COMMON: device_policy.h takes the
 # Vulkan headers' own types)
@@ -763,6 +763,8 @@ int main() {
     if (std::sscanf(getenv("FAKE_GPU"), "%d,%d", &driver, &type) != 2) return 2;
     mkwvk::DeviceFacts f;
     f.driver_id = (VkDriverId)driver, f.device_type = (VkPhysicalDeviceType)type;
+    f.windows = driver != VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA && !getenv("FAKE_LINUX");
+    if (driver == VK_DRIVER_ID_AMD_PROPRIETARY) f.vendor_id = 0x1002;
     dev.policy = mkwvk::device_policy(f);
     mkwvk::device_policy_env(dev.policy, f, [](const char* name) -> const char* { return getenv(name); });
     std::printf("%d\n", occ_copy_wanted() ? 1 : 0);
@@ -776,6 +778,10 @@ COPY_CASES = [
     ({"FAKE_GPU": "%d,%d" % (INTEL_WINDOWS, INTEGRATED)}, 0),
     ({"FAKE_GPU": "%d,%d" % (INTEL_MESA, DISCRETE)}, 0),
     ({"FAKE_GPU": "%d,%d" % (AMD, DISCRETE)}, 0),
+    ({"FAKE_GPU": "%d,%d" % (AMD, INTEGRATED)}, 1),
+    ({"FAKE_GPU": "%d,%d" % (AMD, INTEGRATED), "FAKE_LINUX": "1"}, 0),
+    ({"FAKE_GPU": "%d,%d" % (AMD, INTEGRATED), "RX_VK_OCC_COPY": "0"}, 0),
+    ({"FAKE_GPU": "%d,%d" % (AMD, INTEGRATED), "RX_VK_PARALLEL": "3"}, 0),
     ({"FAKE_GPU": "%d,%d" % (NVIDIA, DISCRETE)}, 0),
     ({"FAKE_GPU": "%d,%d" % (INTEL_WINDOWS, DISCRETE), "RX_VK_OCC_COPY": "0"}, 0),
     ({"FAKE_GPU": "%d,%d" % (AMD, DISCRETE), "RX_VK_OCC_COPY": "1"}, 1),
@@ -887,7 +893,7 @@ def main():
             got = int(subprocess.run([str(exe)], check=True, capture_output=True, text=True, env=env).stdout.strip())
             if got != want:
                 sys.exit("occ_copy_wanted() with %s: %d, want %d" % (extra, got, want))
-        print("PASS: occ_copy_wanted(): on by default with Intel's Windows driver on a discrete GPU only; RX_VK_OCC_COPY "
+        print("PASS: occ_copy_wanted(): Windows AMD integrated and Intel discrete defaults; RX_VK_OCC_COPY "
               "either way; off with the parallel replay")
     check_wiring(replay, draw)
     print("PASS: the wiring in vk_replay.cpp and draw()")

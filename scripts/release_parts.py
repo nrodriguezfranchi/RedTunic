@@ -196,6 +196,8 @@ def package(a):
     copy(a.setup, os.path.join(out, "HookshotBuilder-Setup.exe"))   # (the builder's Repair runs it)
     copy(os.path.join(ROOT, "LICENSE"), os.path.join(out, "LICENSE"))
     tools = os.path.join(out, "tools")
+    for icon in ("red-tunic.png", "red-tunic.ico"):
+        copy(os.path.join(ROOT, "assets", icon), os.path.join(tools, "assets", icon))
     for f in tracked("gpu", "host", "native", "nx2", "scripts", "third_party"):
         copy(os.path.join(ROOT, f), os.path.join(tools, *f.split("/")))
     if a.list:

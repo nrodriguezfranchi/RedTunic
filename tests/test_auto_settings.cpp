@@ -64,6 +64,14 @@ int main() {
     expect(c.tier == 1 && c.upscaler == GAME && c.resolution == RES_ULTRA_PERFORMANCE && std::strstr(c.why, "33%"),
            "an integrated GPU beside 4 threads (i3-1115G4's UHD Graphics): the game's own at 33%");
 
+    Hardware vega;
+    vega.vendor = AMD, vega.integrated = true, vega.mesh_native = false, vega.threads = 12;
+    c = choose(vega);
+    expect(c.tier == 1 && c.upscaler == GAME && c.resolution == RES_QUALITY && c.fixed_resolution,
+           "AMD APU: Minimum memory tier and fixed 67% render scale for a 720p scene at 1080p output");
+    expect(red_tunic_apu(0x1002, true) && !red_tunic_apu(0x1002, false) && !red_tunic_apu(0x8086, true),
+           "Red Tunic defaults target AMD integrated graphics");
+
     Hardware deck;
     deck.vendor = AMD, deck.handheld = true, deck.vram_mb = 1024, deck.screen_w = 1280, deck.screen_h = 800;
     c = choose(deck);

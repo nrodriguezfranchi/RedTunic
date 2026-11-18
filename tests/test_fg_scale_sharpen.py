@@ -32,7 +32,8 @@ SHADERS = ROOT / "gpu" / "vk" / "shaders"
 
 # (the headers made from fg_scale.comp: file, variable, glslang's defines)
 HEADERS = (("fg_scale_comp_spv.h", "FG_SCALE_COMP_SPV", []),
-           ("fg_scale_pq_comp_spv.h", "FG_SCALE_PQ_COMP_SPV", ["-DFG_SCALE_PQ"]))
+           ("fg_scale_pq_comp_spv.h", "FG_SCALE_PQ_COMP_SPV", ["-DFG_SCALE_PQ"]),
+           ("fg_scale_fp16_comp_spv.h", "FG_SCALE_FP16_COMP_SPV", ["-DFG_SCALE_FP16"]))
 
 
 def source_line(comp, var="FG_SCALE_COMP_SPV", defines=()):

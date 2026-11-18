@@ -2,7 +2,7 @@
 // the style of the game's own pause and options screens, so they sit naturally over it. Our own drawing on ImGui's draw lists
 // (no texture, icon or ornament of the game's); the font is the game's own menu font from the player's files, else Libertinus
 // (vk_imgui.cpp). Sizes are points of a 720-line window times the unit (unit()). Every text sits on its own background at a
-// contrast of 4.5:1 or more (WCAG), a white game pixel behind at worst: gold only for the selected value, with dark text on it.
+// contrast of 4.5:1 or more (WCAG), a white game pixel behind at worst. Selected values use dark text on a warm red fill.
 #pragma once
 
 #define IMGUI_DEFINE_MATH_OPERATORS
@@ -25,12 +25,12 @@ inline ImU32 alpha(ImU32 c, float k) {
 
 // ---- the palette ----
 constexpr ImU32 kInk = rgba(240, 232, 214), kInkBright = rgba(255, 250, 240), kSoft = rgba(214, 204, 184), kDim = rgba(168, 156, 136),
-                kGold = rgba(222, 152, 40), kGoldHi = rgba(238, 168, 52), kGoldInk = rgba(36, 24, 8), kAccent = rgba(214, 170, 96),
-                kEdge = rgba(122, 98, 64, 150), kCellDark = rgba(30, 25, 19, 246), kCellName = rgba(60, 47, 32, 240),
-                kCellNameSel = rgba(92, 70, 42, 248), kBronze = rgba(84, 64, 38), kColumn = rgba(34, 26, 17, 228),
-                kBannerTop = rgba(184, 146, 96, 246), kBanner = rgba(176, 138, 88, 246), kBannerInk = rgba(46, 30, 12),
-                kBannerEdge = rgba(70, 48, 24), kTabInset = rgba(84, 56, 30, 250), kBox = rgba(36, 28, 19, 248),
-                kBoxEdge = rgba(122, 98, 64, 220), kBar = rgba(22, 17, 11, 232), kListen = rgba(150, 120, 40);
+                kGold = rgba(214, 105, 96), kGoldHi = rgba(246, 148, 127), kGoldInk = rgba(36, 11, 16), kAccent = rgba(234, 144, 129),
+                kEdge = rgba(135, 75, 80, 150), kCellDark = rgba(33, 17, 22, 246), kCellName = rgba(54, 26, 34, 240),
+                kCellNameSel = rgba(83, 37, 45, 248), kBronze = rgba(91, 41, 48), kColumn = rgba(37, 19, 25, 228),
+                kBannerTop = rgba(216, 127, 117, 246), kBanner = rgba(197, 107, 104, 246), kBannerInk = rgba(36, 11, 16),
+                kBannerEdge = rgba(79, 32, 41), kTabInset = rgba(83, 35, 43, 250), kBox = rgba(44, 22, 29, 248),
+                kBoxEdge = rgba(135, 75, 80, 220), kBar = rgba(27, 12, 17, 232), kListen = rgba(150, 120, 40);
 constexpr int kDimAlpha = 185;   // (the game behind the menu)
 
 /// The unit: pixels per point. By the window's height and the Menu size (1 Small, 2 Medium, 3 Large; anything else, as the
@@ -173,7 +173,7 @@ inline void glow(Ctx& c, ImVec2 a0, ImVec2 b0) {
                      2 * s, 2.2f * s);
     c.d->AddRect(a0 - ImVec2(1.5f * s, 1.5f * s), b0 + ImVec2(1.5f * s, 1.5f * s), kInkBright, 2 * s, 3 * s);
 }
-/// A gold fill, lighter at its top
+/// The selected fill, lighter at its top
 inline void gold(Ctx& c, ImVec2 a0, ImVec2 b0) { c.d->AddRectFilledMultiColor(a0, b0, kGoldHi, kGoldHi, kGold, kGold); }
 
 // ---- the button prompts: the keys, or a controller's buttons by position (any layout: the dot lit) ----

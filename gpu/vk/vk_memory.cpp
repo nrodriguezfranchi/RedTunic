@@ -18,6 +18,7 @@
 #include <vector>
 #include <condition_variable>
 #include "vk_menu.h"
+#include "auto_settings.h"
 #include <deque>
 #include <unordered_map>
 #include <unordered_set>
@@ -6644,7 +6645,9 @@ void imports_give_back() {   // (pools_mu held)
     // AMD and Intel whatever the budget: that one frees pools nothing uses any more, this one pools still live that have been idle
     static const char* env_high = getenv("RX_VK_IMPORT_HIGH");
     static const char* env_low = getenv("RX_VK_IMPORT_LOW");
-    static const int cap_mb = env_int("RX_VK_IMPORT_CAP_MB", -1);
+    static const int cap_mb = env_int("RX_VK_IMPORT_CAP_MB",
+        ::auto_settings::red_tunic_apu(dev.props.vendorID,
+            dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) ? 4096 : -1);
     // (hookshot, 11-13) On on Windows NVIDIA too now. Off there, the live pools only grew: 8 to 150 imports, 0.1 to 2.3 GB, over
     // four areas on an RTX card (none given back), the process's working set with them. On Windows AMD and Intel it stays off by
     // default until it has been run there. The device losses it was turned off for came, as the retired pools' did, right after

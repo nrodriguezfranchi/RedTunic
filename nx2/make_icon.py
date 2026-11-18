@@ -52,6 +52,15 @@ def ico_of(images):
     return head + entries + body
 
 
+def images_from_ico(data):
+    """Recover the embedded square PNGs from an ICO made by ico_of."""
+    _, _, count = struct.unpack_from("<HHH", data)
+    images = []
+    for index in range(count):
+        size, _, _, _, _, _, length, offset = struct.unpack_from("<BBBBHHII", data, 6 + index * 16)
+        images.append((size or 256, data[offset:offset + length]))
+    return images
+
 def icon_entries(images):
     """RT_ICON and RT_GROUP_ICON entries of a .res: group 1, what the window class loads (host/display.c)"""
     group = struct.pack("<HHH", 0, 1, len(images))
@@ -75,9 +84,11 @@ def _node(key, value=b"", text=False, children=()):
     return struct.pack("<HHH", 6 + len(body), count, 1 if text else 0) + body
 
 
-def version_entry(strings):
+def version_entry(strings, version=(0, 0, 0, 0)):
     """RT_VERSION 1: what Windows shows for the exe (Task Manager, the taskbar, its Properties): strings {name: text}"""
-    fixed = struct.pack("<13I", 0xFEEF04BD, 0x00010000, 0, 0, 0, 0, 0x3F, 0, 0x00040004, 1, 0, 0, 0)   # (VOS_NT_WINDOWS32, VFT_APP)
+    major, minor, patch, build = version
+    high, low = (major << 16) | minor, (patch << 16) | build
+    fixed = struct.pack("<13I", 0xFEEF04BD, 0x00010000, high, low, high, low, 0x3F, 0, 0x00040004, 1, 0, 0, 0)
     table = [_node(k, v.encode("utf-16-le") + b"\0\0", True) for k, v in strings.items()]
     info = _node("VS_VERSION_INFO", fixed, children=[
         _node("StringFileInfo", text=True, children=[_node("040904b0", text=True, children=table)]),
@@ -85,13 +96,13 @@ def version_entry(strings):
     return res_entry(16, 1, info, 0x0030)
 
 
-def res_of(images=(), strings=None):
+def res_of(images=(), strings=None, version=(0, 0, 0, 0)):
     """a .res: the icon (images_of's), and the version strings when given"""
     res = res_entry(0, 0, b"", 0)   # (a .res file starts with an empty entry)
     if images:
         res += icon_entries(images)
     if strings:
-        res += version_entry(strings)
+        res += version_entry(strings, version)
     return res
 
 

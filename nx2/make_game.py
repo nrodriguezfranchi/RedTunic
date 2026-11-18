@@ -1786,18 +1786,9 @@ def vk_profile_for(work, environ, readable=None, root=ROOT):
     return prof if (readable or (lambda p: profile_readable(p, any_os=True)))(prof) else None
 
 
-def game_name(out, work, nup=None):
-    """The game's own name and icon (nx2/game_title.py): read from the .nup when there is one and kept in the folder, then, on
-    Windows, made into the exe's icon and the name Windows shows for it (work/hookshot_game.res, linked by nx2/build.py). A
-    folder built from an unpacked dump has neither: the game stays "Hookshot". Nothing here stops a build"""
-    if nup:
-        try:
-            got = game_title.from_nup(nup)
-        except (OSError, SystemExit, ValueError, struct.error) as e:
-            got = None
-            print("the game's name and icon could not be read from the .nup (%s): the game is named Hookshot" % e, flush=True)
-        if got:
-            game_title.keep(out, *got)
+def game_name(out, work):
+    """Install Red Tunic's window title and icon and embed them in the Windows executable."""
+    game_title.keep_red_tunic(out)
     title, icon = game_title.kept(out)
     print("the game's name: %s, its icon: %s" % (title or "none (Hookshot)", "yes" if icon else "none"), flush=True)
     if not LINUX:
@@ -1882,29 +1873,35 @@ def long_path(p):
 def link_or_copy(src, dst):
     """the romfs by hard links where the disk allows: 26 GB not written twice"""
     src, dst = long_path(src), long_path(dst)
-    files = [os.path.join(d, f) for d, _, fs in os.walk(src) for f in fs]
-    for i, s in enumerate(files):
-        t = os.path.join(dst, os.path.relpath(s, src))
-        os.makedirs(os.path.dirname(t), exist_ok=True)
-        if not os.path.exists(t):
-            try:
-                os.link(s, t)
-            except OSError:
-                # A retry skips existing targets, so publish the copy only after it is complete.
-                fd, staged = tempfile.mkstemp(prefix=".romfs-", dir=os.path.dirname(t))
+    folders = [(directory, names) for directory, _, names in os.walk(src) if names]
+    total = sum(len(names) for _, names in folders)
+    i = 0
+    for directory, names in folders:
+        target_dir = dst if directory == src else os.path.join(dst, os.path.relpath(directory, src))
+        os.makedirs(target_dir, exist_ok=True)
+        for name in names:
+            s = os.path.join(directory, name)
+            t = os.path.join(target_dir, name)
+            if not os.path.exists(t):
                 try:
-                    os.close(fd)
-                    shutil.copy2(s, staged)
-                    os.replace(staged, t)
-                except BaseException:
-                    with contextlib.suppress(FileNotFoundError):
-                        if os.name == "nt":
-                            # copy2 can carry the source's read-only attribute over.
-                            os.chmod(staged, stat.S_IWRITE)
-                        os.unlink(staged)
-                    raise
-        if i % 500 == 0:
-            say("progress", "%.3f" % (i / max(1, len(files))))
+                    os.link(s, t)
+                except OSError:
+                    # A retry skips existing targets, so publish the copy only after it is complete.
+                    fd, staged = tempfile.mkstemp(prefix=".romfs-", dir=target_dir)
+                    try:
+                        os.close(fd)
+                        shutil.copy2(s, staged)
+                        os.replace(staged, t)
+                    except BaseException:
+                        with contextlib.suppress(FileNotFoundError):
+                            if os.name == "nt":
+                                # copy2 can carry the source's read-only attribute over.
+                                os.chmod(staged, stat.S_IWRITE)
+                            os.unlink(staged)
+                        raise
+            if i % 500 == 0:
+                say("progress", "%.3f" % (i / total))
+            i += 1
 
 
 def shader_census_cmd(romfs, out):
@@ -2883,7 +2880,7 @@ def main(a=None):
         with contextlib.suppress(FileNotFoundError):   # (the copies are this dump's now, not the .nup's that stamp names)
             os.remove(os.path.join(out, ".hookshot_romfs"))
     check_supported_build(exefs)
-    game_name(out, work, None if a.update else a.nup)
+    game_name(out, work)
 
     # (made once on the development PC: lists of addresses and counts, no game code)
     # (hookshot_vk.profdata: the renderer's own profile, counts over Hookshot's own code)

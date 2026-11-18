@@ -41,6 +41,7 @@ struct Choice {
     int tier = 0;               // (the preset whose scaling holds: 1 Minimum ... 5 Ultra; VRAM budgets: texture_budget.h)
     int upscaler = 0;
     int resolution = 0;         // (0: the tier's own, as the preset sets it)
+    bool fixed_resolution = false;  // Keep a chosen internal resolution under the hardware preset.
     char why[480] = {};
 };
 
@@ -71,6 +72,11 @@ inline int tier_of(const Hardware& h) {
 inline void add(Choice& c, const char* text) {
     const size_t n = std::strlen(c.why);
     std::snprintf(c.why + n, sizeof c.why - n, "%s%s", n ? "; " : "", text);
+}
+
+// AMD APUs share their texture and render-target allocations with the game and Windows.
+inline bool red_tunic_apu(uint32_t vendor_id, bool integrated) {
+    return vendor_id == 0x1002 && integrated;
 }
 
 inline Choice choose(const Hardware& h) {
@@ -110,6 +116,11 @@ inline Choice choose(const Hardware& h) {
     if (h.integrated && h.threads > 0 && h.threads <= 4) {
         c.resolution = RES_ULTRA_PERFORMANCE;
         add(c, "4 threads or fewer: the game's own at 33%");
+    }
+    if (h.vendor == AMD && h.integrated && (h.threads == 0 || h.threads > 4)) {
+        c.resolution = RES_QUALITY;
+        c.fixed_resolution = true;
+        add(c, "Red Tunic AMD APU: fixed 67% render scale (720p at 1080p output)");
     }
     return c;
 }

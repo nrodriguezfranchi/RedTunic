@@ -1,304 +1,75 @@
-<h1 align="center">
-  <br>
-  <a>
-  <img src="assets/hookshot.png" alt="Hookshot" width="200">
-</a>
+<p align="center"><img src="assets/red-tunic.png" alt="Red Tunic logo" width="200"></p>
 
-  <br>
-  <b>Hookshot</b>
-  <br>
-</h1>
+# Red Tunic 4.0.0
 
-<h4 align="center">The Legend of Zelda: Ocarina of Time (Nintendo Switch 2) running natively on Windows & Linux, with no emulator.
-</h4>
+Red Tunic is an unofficial native PC recompilation of the Nintendo Switch 2 remake of *The Legend of Zelda: Ocarina of Time*. It builds locally from your own copy of the game. Red Tunic is based on Hookshot and focuses on integrated AMD Radeon graphics, starting with the Ryzen 5 5625U with 16 GB of shared memory.
 
+[Project and source updates](https://github.com/spacefarergames/RedTunic) · [Releases](https://github.com/spacefarergames/RedTunic/releases) · [Technical documentation](docs/README.md)
 
-<p align="center">
-  <a href="#project-status">Status</a> |
-  <a href="#install-and-play">Install and play</a> |
-  <a href="#in-game-menu">In-game menu</a> |
-  <a href="#if-something-goes-wrong">Problems</a> |
-  <a href="#build-from-source">Build from source</a> |
-  <a href="#how-it-works">How it works</a> |
-  <a href="#want-to-help">Want to help?</a> |
-  <a href="#credits">Credits</a> |
-  <a href="#license">License</a>
-</p>
+## Updating
 
-[Documentation](docs/README.md) · [Common issues and answers](docs/common-issues.md) · [Report a bug](https://github.com/NotRexed/Hookshot/issues/new/choose)
-
-Hookshot is a static recompilation. The game's code is translated to C and compiled into a Windows or Linux program,
-the console's system software is reimplemented, and the Switch 2 graphics are rebuilt on Vulkan. All of this happens
-**on your PC, from your own copy of the game**.
-<br>
-
-> [!WARNING]
-> Some users report the file in releases to be a Trojan - it is not. Feel free to run it through any antivirus software
-
-
-Discord: https://discord.gg/rexed
-<br>
-
-> [!IMPORTANT]
-> This repository **does not contain the game, keys or an executable**, and it does not explain how to get them. You
-> need your own copy. Everything the build creates (`hookshot.exe`, the generated code, the shader caches and your
-> saves) comes from your game and stays on your PC. Never share those files.
-
-## Project status
-
-Experimental. Players have reported on many PCs, from Kokiri Forest to the dungeons: the table says what works and
-what does not yet. Open problems are collected in tracking issues, linked below.
-
-| What | Status |
-|---|---|
-| Kokiri Forest: reaching gameplay and walking around | ✅ Works |
-| Sound, controller, keyboard and saves | ✅ Works |
-| In-game menu, frame generation and upscaling | ✅ Works |
-| Flicker (the picture flashing too bright while moving) | ✅ Fixed in v2.0.2 (#645) |
-| Ground fog vanishing when looking down | ✅ Fixed in v2.0.2 (#638) |
-| Models with missing pieces (doors, fences, parts of trees) | ✅ Fixed where tested, more play needed |
-| Stutter when entering new areas | ⚠️ Still happens the first time you visit a place. The next visits are smooth |
-| Performance | ⚠️ Depends on the PC: some reach a steady 60 fps, others stay below it, more so in Hyrule Field |
-| Hyrule Field, Castle Town, Kakariko and the dungeons | ⚠️ Players got there, with open bugs: lighting and shadows (#1004), crashes and freezes (#2507) |
-| Ultrawide and 4:3 | ✅ Works. The Aspect ratio row's default, Monitor's shape, widens the 3D to the screen ([#2119](https://git.notrexed.dev/Hookshot/Hookshot/commit/145eed2650d9d2cebad85a8a0052d302086015c7)); the HUD keeps its 16:9 size with its corners at the screen's edges, or in the middle 16:9 with the HUD layout row; movies stay in the middle 16:9 |
-| NVIDIA cards | ✅ Works. The most tested |
-| AMD cards | ⚠️ Many tested: reports from the RX 6600, RX 6800 XT, RX 7800 XT, RX 7900 XTX and RX 9070 XT. On Windows, the RX 6000 cards (Navi 21 and 22) draw task and mesh shaders through the compute fallback by default, as the driver lost the GPU with them (#1747, [#1992](https://git.notrexed.dev/Hookshot/Hookshot/commit/1396428d0bfcde68b5c7bd63f9837564d9af1a05), [#2215](https://git.notrexed.dev/Hookshot/Hookshot/commit/f95d80f5371821420c5a47a0c7e9f73e7f484abc)). Driver crashes and device lost are still reported ([#996](https://git.notrexed.dev/Hookshot/Hookshot/commit/f95d80f5371821420c5a47a0c7e9f73e7f484abc)) |
-| Intel cards | ❓ Few reports, many of them black screens or crashes (#999) |
-| Cards without mesh shaders (such as AMD RX 5000 and older) | ❌ Not supported: parts of the picture are missing. Since v2.0.6 a fallback runs the mesh programs as compute shaders on cards with buffer device addresses ([#640](https://git.notrexed.dev/Hookshot/Hookshot/commit/07773abd1dc7d79d56a690207e9bc7db7272076d)); it leaves out the mesh draws that take their count from a buffer |
-| Linux | ✅ Works with the AppImage. Tested on several distributions (CachyOS, Fedora, Bazzite, SteamOS) and cards, with open problems on some AMD cards (#1000) |
-
-## Install and play
-
-The game does not come ready-made: Hookshot Builder builds it on your PC from your copy. You do this once. After that
-you start the game from its launcher, which also updates it.
-
-### What you need
-
-- **Your copy of the game at the supported version:** program `0400486024DEC000`, update v131072, build `e0f3ccfa`.
-  Other versions do not work. A `.nup` file, a `.nx` file made from one
-  ([NXFormat](https://github.com/fab918/nxformat)'s `nxconvert pack-nup`), or the `romfs` and `exefs` folders.
-- 64-bit Windows 10 or 11, or 64-bit Linux with glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora, Arch,
-  SteamOS ...) and a CPU with AVX2. The Linux AppImage needs AVX2; on Windows, and in a build from source, a CPU
-  without it gets a game built for what it has, a little slower.
-- A graphics card with Vulkan 1.3 and mesh shaders, with an up-to-date driver: NVIDIA GeForce RTX 20 series or newer,
-  AMD Radeon RX 6000 series or newer, or Intel Arc. On Linux, Mesa or NVIDIA's driver. Cards without mesh shaders are
-  not supported.
-- 8 GB of video memory (VRAM) or more is recommended. Cards with less can use the in-game menu's lower Quality presets.
-- 16 GB of RAM or more. A run uses about 10 GB.
-- About 60 GB free while building, on an SSD if you can: a hard drive makes the build much slower. You can build on one
-  anyway; the builder says so first.
-- An internet connection for the download. Nothing else to install: the builder brings its own compiler and tools.
-
-### On Windows
-
-For a portable install on an external SSD, run the downloaded setup with `--portable`; see
-[Portable Hookshot Builder](docs/windows-portable-builder.md) for folder, move and repair behavior.
-
-1. Open the [latest release](https://git.notrexed.dev/Hookshot/Hookshot/releases/latest) and download `HookshotBuilder.exe`.
-2. Run it. It downloads the rest of Hookshot Builder (about 500 MB), checks it, and opens it.
-3. Pick your game. The builder looks for `.nup` and `.nx` files in your Downloads, Desktop and Documents folders and lists them
-   under **Found on this PC**. Not listed? Press **Browse…**, drop the file on the window, or choose
-   **romfs and exefs folders**. The builder checks that it is the right version.
-4. Under **Install the game to**, keep the folder (`Games\Hookshot` in your user folder) or press **Change**. Choose
-   the **Game language**.
-5. Press **Build the game**. It takes about 10 to 45 minutes, depending on your CPU and memory. You can use your PC in
-   the meantime.
-6. When it says **Your game is ready**, press **Play**. The **Desktop shortcut** and **Start menu entry** boxes are
-   ticked: untick them if you don't want them.
-
-Next time, start the game from the Hookshot shortcut, or `hookshot.exe` in the game folder. That is the launcher: it
-has **Play**, and **Update** when a newer release is out.
-
-The first start prepares the game's shaders, which takes a while. Later starts are faster.
-
-### On Linux
-
-1. Open the [latest release](https://git.notrexed.dev/Hookshot/Hookshot/releases/latest) and download
-   `Hookshot-<version>-x86_64.AppImage`. It is Hookshot Builder with everything it needs inside.
-2. Allow it to run as a program. In most file managers: right-click it, open **Properties**, and turn on
-   "Allow executing file as program" (the words differ between desktops). Or in a terminal:
-   `chmod +x Hookshot-*-x86_64.AppImage`.
-3. Double-click it. The Hookshot Builder window opens.
-4. Under **Game files**, choose **.nup file** (a `.nx` file goes here too) or **romfs and exefs**, then press
-   **Browse** to pick them. The builder checks the version.
-5. Under **Save the game to**, keep `~/Games/Hookshot` or choose another folder. Choose a **Language**.
-6. Press **Build**. It takes about 10 to 45 minutes, depending on your CPU and memory.
-7. When it says "Your game is ready", press **Play**.
-
-The game is also added to your applications menu as "Hookshot". That entry, and `hookshot` in the game folder, open the
-launcher: **Play**, and **Update** when a newer release is out. Keep the AppImage where it is: the launcher uses it to
-update.
-
-When the desktop gives the launcher its own systemd service, **Play** waits up to two seconds for the game's
-separate scope before closing the window. If that hand-off fails, it cancels that attempt before starting the
-game directly, and records the fallback in `hookshot_startup.log` after the game exits. A direct start still
-follows the desktop's original service lifetime; this fallback cannot bypass a desktop that stops its children.
-
-The same AppImage also builds and starts the game without opening the window, for a machine you reach over SSH or for a
-script: see [Linux, the AppImage from the command line](#build-from-source).
-
-For fast GPU memory imports on Linux, the game user needs read/write access to `/dev/udmabuf` (the kernel's
-`udmabuf` module). Without it, Hookshot falls back to host-pointer imports, which can be much slower on AMD/RADV
-(NVIDIA's driver refuses these dma-bufs, so on NVIDIA the game uses host-pointer imports, which are not slow there);
-permission errors produce a warning on stderr and in `hookshot_log.txt`. With an NVIDIA card on NVIDIA's own driver
-you do not need this access and can ignore that warning: the check runs at the start, before the game knows which
-GPU it has. Otherwise, check `ls -l /dev/udmabuf` and `id`.
-An administrator can add you to the device's owning group, then you must log out and back in. Only use that group
-if access to its other devices is intended: `kvm` also grants virtualization access. For an active local desktop
-session using systemd-logind, prefer a device-specific rule in `/etc/udev/rules.d/70-hookshot-udmabuf.rules`:
-`SUBSYSTEM=="misc", KERNEL=="udmabuf", TAG+="uaccess"` (before `73-seat-late.rules`). This grants access to the active
-local user, not SSH or service users. For those, an administrator can instead create a dedicated `udmabuf` group,
-add only the game user, and use `SUBSYSTEM=="misc", KERNEL=="udmabuf", GROUP="udmabuf", MODE="0660"` in that file.
-Reload with `sudo udevadm control --reload-rules` and apply with
-`sudo udevadm trigger --action=add /sys/class/misc/udmabuf`; restart the session/service after a group change.
-If the device is absent, the distribution must provide/load the module first (`sudo modprobe udmabuf`).
-Do not run the game as root or make the device world-writable.
-
-### Updating
-
-When a new release is out, the launcher says "Update available". Press **Update**: in `hookshot.exe` on Windows, or in
-`hookshot` (or the AppImage) on Linux. It downloads only the parts that changed and builds the game again in the same
-folder. The build files of the last build are gone by then (see [Where the files go](#where-the-files-go)), so an
-update takes about as long as the first build. Your saves and settings are kept. What changed is on the
-[Releases page](https://git.notrexed.dev/Hookshot/Hookshot/releases).
-
-<details>
-<summary>What an update keeps and replaces, and updating from the command line</summary>
-
-To be safe, copy your saves somewhere first: the `user` folder in the game folder on Windows, or
-`~/.local/share/hookshot` on Linux.
-
-| Kept | Replaced |
-|---|---|
-| Your saves (`user`, or `~/.local/share/hookshot` on Linux) | The game in `bin` and its files |
-| `hookshot_options.ini`, the in-game menu's choices and your controls | `image.bin` and the shader list |
-| `hookshot_env.txt` | `language.txt`, written again with the game's language |
-| | `texts`: the texts reworded for a PC, made again |
-| `mods` | |
-| `mods`, and `hookshot_mods.txt` (the Mods tab's order and switches) | `exefs_patches.txt`, written again with the ExeFS patches the build applied |
-
-The game files the first build read are kept in the game folder, so an update does not need your `.nup` again.
-
-From a clone: `git pull`, then `python -I nx2/make_game.py --update <game folder>`. The Linux AppImage does the same
-with `--update <game folder>`.
-
-</details>
+Get new Windows Builder archives from [Red Tunic Releases](https://github.com/spacefarergames/RedTunic/releases). Extract the new Builder into its own folder, open it, and select the existing game output directory to rebuild with the bundled version. Keep the game output directory to reuse your saves and settings. For a source checkout, use `git pull --ff-only` and rebuild locally.
 
 ### Latest development build
 
-Want a fix before it is in a release? The
-[latest development build](https://git.notrexed.dev/Hookshot/Hookshot/releases/tag/nightly) is made from `main` after every
-change, with the same files as a release. It is untested and may break your saves or settings: copy them first (see
-above).
+For development snapshots, use the source at the latest commit you want to test and record its commit ID with your results.
 
-- **Windows:** download `HookshotBuilder.exe` from it and start it from a terminal as `HookshotBuilder.exe --tag nightly`
-  (without `--tag nightly` it installs the latest release instead).
-- **Linux:** download `Hookshot-<version>-x86_64.AppImage` from it and use it as above.
+## Changes in 4.0.0
 
-To go back, install the [latest release](https://git.notrexed.dev/Hookshot/Hookshot/releases/latest) the usual way.
+| Area | Red Tunic change |
+| --- | --- |
+| Branding and CPU target | Red Tunic name, red tunic and Radeon-inspired logo, and version 4.0.0. Ryzen builds use x86-64-v3 and tune for the detected Zen generation. |
+| Loading and settings | Animated procedural fire and embers below the startup logo, eased progress during shader and pipeline preparation, and red tints in the game menu and Windows Builder. |
+| Internal resolution | On matching AMD integrated graphics, Auto (this PC) fixes the render scale at two thirds and a fresh install selects 1920 × 1080 docked output. The 3D scene renders at 1280 × 720 in that configuration. The preset selects the in-game upscaler and reduces grass and shadow settings to 75%. |
+| Native Vulkan and task/mesh draws | Uses native Vulkan mesh shaders where supported by hardware and driver policy. The compute fallback handles task and mesh work on Vega and avoids an extra transfer barrier for indirect setup. Eligible draw passes use the game's barrier ordering on AMD APUs. |
+| Outdoor culling | Windows AMD integrated graphics use the renderer's batched visibility-query copy when coherent host memory is available and parallel replay is off. Set `RX_VK_OCC_COPY=0` to compare against direct query-pool reads. |
+| Shared memory and textures | AMD APU policy caps the texture cache at 1024 MB and the idle-import budget at 4096 MB. These are separate cache budgets. Eligible opaque ASTC textures can use BC1, while textures that need alpha retain an alpha-capable format. Texture staging and eviction reuse existing resources where possible. |
+| Area transitions and streaming | Windows read-only `.zs` streams use sequential read-ahead. When enabled with `HL_MEM_COLD=1`, the Windows cold-page worker time-slices pool and heap scans at about 1 ms apiece and resumes their cursors on later passes. A single OS call can run longer. |
+| Cold shaders | Capture prewarm, asynchronous shader work and quick-pipeline controls are available. On AMD, `RX_VK_AMD_COMPUTE_NOOPT_KEY` bypasses the driver optimizer for one 16-digit Red Tunic compute program key. Identify it with `RX_VK_PIPELINE_TRACE=1`. The Kokiri-specific key still needs confirmation in a local trace. |
+| Image quality experiments | `RX_VK_SHARPEN_FP16=1` enables native FP16 color taps for SDR sharpening on supported AMD GPUs. `RX_VK_RT_NO_STORAGE=1` lets eligible AMD color targets omit storage usage so the driver can retain compression. The latter is opt-in. |
+| JakePC profile | Local settings defer readbacks for sizes 40, 2000 and 3980, give texture lookahead and quick builds 4 ms each, prefer asynchronous AV1 on Windows with four dav1d fallback threads, share CPU cores with replay, and enable SDR FP16 sharpening. |
+
+## Project status
+
+Red Tunic 4.0.0 reached the intro and exited cleanly in a headless Windows 11 smoke test on a Ryzen 5 5625U with integrated Radeon graphics. The log reported native Vulkan and selected the 720p internal rendering preset at 1080p output. The smoke test did not cover gameplay or the loading-screen visuals. See [tested configurations](docs/tested-configurations.md) for the upstream test history.
+
+### Hyrule Field benchmark notes
+
+A user report on an AMD Ryzen 5 system describes smooth Hyrule Field gameplay at **30–60 FPS** with grass, foliage and shadow density set to Low, and **about 50% less stutter**. The report did not include a comparison build, test route or frame-time capture, so the figures are preliminary.
+
+## Install and play
+
+Use 64-bit Windows 10 or 11, or a supported x86-64 Linux distribution, a Vulkan-capable GPU, and your own copy of the supported game build (program `0400486024DEC000`, update `v131072`, build `e0f3ccfa`). Build from a `.nup` or extracted `romfs` and `exefs` folders. Keep the game dump, keys, generated code, shaders and saves on your PC.
+
+Clone the [Red Tunic source](https://github.com/spacefarergames/RedTunic), then see [Build from source](#build-from-source) for dependencies and commands. After building, launch the generated game executable from the output folder. The existing runtime filenames, including `hookshot_options.ini` and `hookshot_env.txt`, are used for config compatibility. Use **Graphics → Quality preset → Auto (this PC)** for the AMD profile. At 1920 × 1080 output, keep the fixed two-thirds render scale for 720p internal rendering.
+
+### On Windows
+
+1. Download `RedTunic-v4.0.0-Windows-x64.zip` and its SHA-256 file from [Red Tunic Releases](https://github.com/spacefarergames/RedTunic/releases). Use `Get-FileHash .\RedTunic-v4.0.0-Windows-x64.zip -Algorithm SHA256` to verify the archive.
+2. Extract the entire archive into a short path such as `C:\RedTunicBuilder` and open `HookshotBuilder.exe`. The archive includes the Windows build tools and the Builder runtime.
+3. Select your own supported `.nup` or extracted game folders, choose a separate game output folder, and build. Open the generated `hookshot.exe` in that folder to play.
+
+The redistribution archive contains the Builder, source and dependencies. The game executable, game data, keys, local saves and compiled caches are produced or supplied locally.
+
+### On Linux
+
+Follow the Linux commands in [Build from source](#build-from-source). Linux builds use the host Vulkan driver. The [Steam Deck playbook](docs/steam-deck-playbook.md) covers the inherited handheld setup.
 
 ### Where the files go
 
-- The build reads your game and never changes it. It writes to the folder you choose and to the builder's own folder:
-  `%LOCALAPPDATA%\HookshotBuilder` on Windows, `~/.cache/hookshot-builder` on Linux.
-- The romfs is hard-linked instead of copied where the disk allows it.
-- The build files (about 4 GB: the translated code and the compiled objects) are deleted once the game is ready. None
-  of them are needed to play. To keep them, so that an update compiles only what changed, set the environment variable
-  `HOOKSHOT_KEEP_BUILD_FILES=1` for the builder; on Windows, **Free up space** on the "Your game is ready" page then
-  deletes them when you want. The build files folder can be moved before a build (**Change**, **Default**).
-- Saves: the `user` folder in the game folder on Windows, `~/.local/share/hookshot` on Linux (a `user` folder from an
-  earlier Linux build is moved there once). `--user <folder>` puts them somewhere else ([command line
-  arguments](#running-the-game-from-the-command-line)).
-  The game also backs your saves up outside the game folder, at each start and after it saves (the last 20, in
-  `%LOCALAPPDATA%\Hookshot\save-backups` on Windows, `~/.local/share/hookshot/save-backups` on Linux). A game folder with no
-  saves, such as a new install or one built again into another folder, gets the newest backup back at its first start; a
-  folder that has saves is never touched. To go back to an older backup, copy its `save` folder over the game's own.
-  To carry on with a save from an emulator (Lichii, Eglantine, Orchid, ...) or another PC port, or to take yours there, see
-  [using a save from an emulator](docs/saves.md).
-- To uninstall, delete the game folder, the builder's folder and the shortcuts.
-
-### What Hookshot connects to
-
-Hookshot uploads nothing about you or your PC. It reads no browser data, passwords or session keys. Everything it does on
-the network or with other programs:
-
-- **Downloads from GitHub only.** The builder and the updater ask `api.github.com` which release is the latest, and download
-  that release's files from this repository's Releases on `github.com` (the setup lists, the build parts, the Linux AppImage
-  parts and the shared pipeline list). With **DLSS** ticked in the builder, NVIDIA's DLSS library comes from
-  `github.com/NVIDIA/DLSS`. The game checks for a newer release on `api.github.com` at start; set
-  `HOOKSHOT_NO_UPDATE_CHECK=1` to turn that off.
-- **Your Discord status, through the Discord app on this PC.** While Discord runs, the game shows "Playing Hookshot" with
-  the time played. It does this the way every game does: through the Discord app's own local connection, a named pipe on
-  Windows and the socket `discord-ipc-0` in `$XDG_RUNTIME_DIR` (or `$TMPDIR`, or `/tmp`) on Linux. What it sends is
-  "Ocarina of Time", the Hookshot version, the start time and the icon's name. The Discord app then shows it through
-  Discord's servers. Turn it off with **Gameplay → Discord status** in the Insert menu.
-- **Files it writes outside the game folder:** the builder's own folder (above), its settings (`~/.config/hookshot` on
-  Linux), the saves (above), and shortcuts if you ask for them. **Bug report** (Gameplay tab) only writes a folder in
-  `bug-reports` in the game folder, with your home folder and user name taken out of its logs, and **Save my pipeline
-  list** only saves a zip in your Downloads folder: you choose whether to attach them anywhere.
-- On Linux the game starts through a small script (`play-diagnostics.sh`). It keeps the game's first error messages in
-  `hookshot_startup.log` in the game folder, using a private temporary folder there that it removes when the game exits.
-
-Only download Hookshot from this repository's [Releases](https://git.notrexed.dev/Hookshot/Hookshot/releases). Each release
-lists its files' checksums in `SHA256SUMS`. A copy from anywhere else may not be ours.
+The build writes to the directory given to `--out`. The output folder holds `user/` for saves, `cache/` for shader and pipeline data, and `hookshot_options.ini` and `hookshot_env.txt` for settings.
 
 ### If something goes wrong
 
-| Problem | What to do |
-|---|---|
-| Where is the log? | `hookshot_log.txt` in the game folder holds the last run. The four runs before are `hookshot_log.1.txt` (the last) to `.4.txt`. Started from a terminal, the game prints there instead. Every 600 frames it has a `vk: status:` line: the video memory in use of what the driver allows, and DLSS's details while it draws; `vk: over the driver's video-memory allowance` says when the game passed it The logs are safe to send as they are: your home folder is written `~` (`%USERPROFILE%` on Windows) and your user name `<user>` in their paths, the rest of each path kept; the builder's `--log` file is written the same way |
-| A place has a wrong texture, or a floor or wall is missing | Look for `hookshot_damaged_files.txt` in the game folder. The build writes it when your game dump is incomplete (about 23.3 GB, a complete one is about 23.8 GB): it lists each damaged game file and the file put in its place. Dump the game again and build from the new dump; the file is then removed |
-| Linux Builder Play closed before the game log appeared | After the game exits, check `hookshot_startup.log` in the game folder for up to 64 KiB of startup stderr and its exit status. |
-| "Hookshot supports build e0f3ccfa" or "This version isn't supported" | Check that you chose the right game with its update installed |
-| The game opens and closes, or the log says "device lost" | Update your graphics driver. On AMD cards there are known crashes (#708, #614) |
-| Parts of the picture are missing, or a message says your card has no mesh shader support | The card or its driver has no mesh shaders. Update the driver; older cards are not supported ([#640](https://git.notrexed.dev/Hookshot/Hookshot/commit/07773abd1dc7d79d56a690207e9bc7db7272076d)) |
-| AMD: blocky textures, solid rectangles in the sky or unusually dark courtyard surfaces | Try the [RGBA8 texture workaround](#amd-texture-workaround). It uses more graphics memory |
-| Linux, AMD: grass and small plants flicker in and out, and the log says `not imported (VkResult -13)` and `storage buffer NOT bound` | The kernel's udmabuf limit (64 MB) is smaller than some of the game's memory pools. Builds with the sparse-queue fix import those through the driver's sparse queue. On older builds, or if the log still says `CANNOT be imported`, close the game and run `echo 2048 \| sudo tee /sys/module/udmabuf/parameters/size_limit_mb`, then start it again. The setting lasts until a restart of the PC; a line `w /sys/module/udmabuf/parameters/size_limit_mb - - - - 2048` in `/etc/tmpfiles.d/udmabuf.conf` sets it at every start |
-| Linux: the game does not start or the picture is broken | The game needs a Vulkan 1.3 driver with mesh shaders. Check with `vulkaninfo \| grep mesh`: it should list `VK_EXT_mesh_shader`. Update Mesa or the NVIDIA driver |
-| Steam Deck: the game freezes and closes in Kokiri Forest or the Great Deku Tree (`gfx_0.0.0 timeout` in `journalctl -k`) | `RX_VK_MESH_NOCULL=2c56dc1006942f74` in `hookshot_env.txt` gets past it with every model drawn (the culling pass that runs for seconds is turned off). `RX_VK_SKIP_CODE=2c56dc1006942f74` also gets past it, but the models those draws make go missing (see the [development guide](docs/development.md#switches-for-testing-and-debugging), #817) |
-| "Your antivirus removed part of the build tools" | A false alarm on unsigned programs. Restore the files from Windows Security's Protection history, or add `%LOCALAPPDATA%\HookshotBuilder` to its exclusions, then press **Repair** |
-| Stutter the first time you see something | Normal for now: shaders are being prepared. It gets better when you pass through the same place again. You can help remove it for everyone: [send your pipeline list](#send-your-pipeline-list) |
-| Windows, NVIDIA: stutter every start in places you have seen, after the shaders were prepared | The driver's shader cache is too small to keep them all (the first start builds about 2 GB of pipelines into it). In the NVIDIA Control Panel, Manage 3D settings, set **Shader Cache Size** to **Unlimited** (or 10 GB). On Linux the game raises the driver's limit itself |
-| The game is in the wrong language | Change the code in `language.txt` in the game folder. The file lists them all, and an update keeps the one you set there |
-
-If the problem continues, [report it](https://git.notrexed.dev/Hookshot/Hookshot/issues/new/choose) with the version, where
-you were in the game, your graphics card, `hookshot_log.txt` and a screenshot or video. Never send game files. The
-in-game menu's **Gameplay → Bug report** gathers all of it in one press ([In-game menu](#in-game-menu)).
-If the game runs slowly or stutters, [report slow performance](docs/performance-report.md) shows how to have it measure
-itself first. To find out why, add `HOS_PROFILE=1` to `hookshot_env.txt`: the game records where its time goes and what
-each stutter was into a folder in `logs` ([turn on the profiling mode](docs/performance-report.md#1-turn-on-the-profiling-mode)).
+For a bug report, include your Red Tunic version, GPU driver, output and render resolutions, scene and reproduction steps. See [common issues and answers](docs/common-issues.md) and the [development guide](docs/development.md) for troubleshooting and benchmark tools.
 
 #### Low FPS or stutter
 
-Walk through the same spot twice after shader preparation finishes. Note whether the slowdown clears on the
-second pass or lasts until you restart the game. For a slowdown after an update, compare the same spot and
-settings on both versions if you still have the earlier build. Turn off **Frame generation** for both runs so the
-FPS reflects game frames, and keep the resolution, upscaler and frame rate cap the same.
-
-Attach the log from the slow run and, if available, the one from the earlier build. Say where the FPS dropped and
-keep the lines around the drop that show `presents`, `GPU time`, `waits for shaders or pipelines`, `VRAM:` and
-`memory heaps`. Compare total and per-heap memory use with the driver's allowances. The texture cache has a
-separate budget on the `VRAM:` line.
-
-If the GPU time stays high, a separate run with `RX_VK_PASS_TIMING=1` in `hookshot_env.txt` reports which GPU
-passes take the time every 600 presents. Keep the unprofiled log for the FPS comparison since the timing itself
-adds work. Remove the switch after collecting the log. The [development guide](docs/development.md#time-and-profiles)
-has more switches.
+Record the area or transition, whether it is the first visit since launch, and whether it repeats after the shader cache warms. Include frame-time percentiles and the slowest frame if available.
 
 #### AMD texture workaround
 
-For these AMD texture artifacts, try keeping decoded ASTC textures as RGBA8 instead of re-encoding them to BC3
-(#57, #1006).
-Turn on **ASTC as RGBA8** in the menu's Debug tab, under Developer, and restart the game. (`RX_VK_ASTC_RGBA8=1` in
-`hookshot_env.txt` does the same, as earlier versions of this readme said; while that line is there the row shows its
-value and cannot be changed, so remove the line to choose in the menu.)
-
-This is a workaround for some artifacts, not a general lighting fix. It can substantially increase graphics-memory
-use and cause stalls when the card runs out of headroom. To undo it, turn the row off (and remove any `RX_VK_ASTC_RGBA8` line from `hookshot_env.txt`) and restart the game.
-
-`RX_VK_ASTC_BC7=1` keeps those big ASTC textures as BC7 instead of BC3. Both are 8 bits a texel, so the graphics memory
-is the same; BC7's mode 6 keeps the colours' gradients and alpha much better, and the textures look cleaner where BC3
-shows bands or blocks. Off unless set; `RX_VK_ASTC_RGBA8=1` above still wins when both are set.
+If an AMD driver shows texture corruption, compare the **ASTC as RGBA8** setting in the Developer menu. RGBA8 raises texture memory use, which matters on integrated Radeon graphics. Record which texture and scene changed in your report.
 
 ## In-game menu
 
@@ -488,7 +259,7 @@ Camera, Mouse, Movement and Menu. The table lists those tabs' rows in that order
   holds the frames to its refresh rate: V-Sync on, or the driver's FIFO mode. `HOS_FPS_MAX=30` or `<61-1000>` sets a cap for one
   run.
 - **Bug report** writes a folder `bug-reports/<date>_<time>` in the game folder with what an issue needs: `report.txt`,
-  which answers the [game problem form](https://git.notrexed.dev/Hookshot/Hookshot/issues/new?template=1-game-problem.yml)'s
+  which answers the [upstream Hookshot game problem form](https://git.notrexed.dev/Hookshot/Hookshot/issues/new?template=1-game-problem.yml)'s
   questions under its own headings (the version, the map you are in, your graphics card and driver, CPU, RAM and
   system, the menu options and the `RX_`/`HOS_` switches you changed) and ends with a link that opens the form with them
   filled in (the switches by name only); `hookshot_log.txt` (this run's log so far) and `hookshot_log.1.txt` (the run
@@ -810,8 +581,8 @@ For developers, and for players who prefer the command line. The builder windows
 <summary>Windows, from the command line</summary>
 
 ```powershell
-python -I nx2/make_game.py --nup "C:\path\your-game.nup" --out "C:\Games\Hookshot" --language en-US
-python -I nx2/make_game.py --romfs "C:\path\romfs" --exefs "C:\path\exefs" --out "C:\Games\Hookshot" --language en-US
+python -I nx2/make_game.py --nup "C:\path\your-game.nup" --out "C:\Games\RedTunic" --language en-US
+python -I nx2/make_game.py --romfs "C:\path\romfs" --exefs "C:\path\exefs" --out "C:\Games\RedTunic" --language en-US
 ```
 
 Add `--check` with your `.nup` or `--exefs` to only check the game's version. It builds nothing.
@@ -902,7 +673,7 @@ use them.
 For example, keep saves somewhere else:
 
 ```powershell
-cd "C:\Games\Hookshot"
+cd "C:\Games\RedTunic"
 .\bin\hookshot.exe --user "D:\Hookshot data"
 ```
 
@@ -1148,25 +919,7 @@ More detail is in the [development guide](docs/development.md) and the [design n
 
 ## Want to help?
 
-Testing on other graphics cards and reporting the result already helps a lot, and so does playing further into the
-game than anyone has yet.
-
-### Send your pipeline list
-
-The first time the game meets a pipeline it builds it on the spot, which stutters. Releases build a list of known
-pipelines before the title, and every player's play adds to it. To send yours:
-
-1. In the game, open the menu (Insert or F1), go to the **Debug** tab and choose **Save my pipeline list** (under Developer). Or, in
-   Hookshot Builder's launcher page for the game folder, press **Save my pipeline list**.
-2. It saves `hookshot-pipelines-<date>.zip` in your Downloads folder, copies a filled-in report to the clipboard and
-   opens the Submit your pipelines issue in your browser.
-3. Attach the zip to a comment there, paste the report and fill in where you played.
-
-The zip holds only `hookshot_pipeline_states.bin` (shader hashes, formats and draw state, and the hashes of the compute
-programs your play ran, so that a release can keep those ready too: no game code, game data or personal info) and the
-report (the version, OS, GPU and driver, output and render resolution, upscaler, frame
-generation, HDR and the mods the game loaded). Nothing is uploaded for you. If the list is missing or damaged, it says
-so and saves nothing. In a run without a window (`HOS_HEADLESS`) the menu saves the zip but opens nothing.
+For performance reports, include the scene, GPU and driver, frame times, and whether the shader cache was warm. Use the Red Tunic repository for project discussions and pull requests.
 
 Bigger ways to help:
 
@@ -1180,8 +933,9 @@ looks like.
 
 ## Credits
 
-Hookshot exists thanks to the work of many people:
+Red Tunic builds on [Hookshot](https://git.notrexed.dev/Hookshot/Hookshot) and the work of its contributors:
 
+- **NX2navi** and **Lichii** informed the AMD query and shader work. [NX2navi measurements](https://github.com/tangerineturtle1/NX2navi/releases/tag/v0.8.0) | [Lichii shader investigation](https://github.com/zortos293/Lichii/pull/573)
 - **NotRexed**: Hookshot, BlueShell (Mario Kart World), Skybound (Tears of the Kingdom) and the a64-kit tools.
 - **[Eden](https://git.eden-emu.dev/eden-emu/eden)** and **Eglantine**: the shader recompiler and Switch 2 shader work.
 - **suyu**: the graphics decoders and the AArch64 translator.
@@ -1212,7 +966,7 @@ Hookshot exists thanks to the work of many people:
 
 ## License
 
-Hookshot is free software under the [GNU General Public License, version 3 or later](LICENSE) (GPL-3.0-or-later).
+Red Tunic is free software under the [GNU General Public License, version 3 or later](LICENSE) (GPL-3.0-or-later).
 It includes code from Eden and suyu, which are under the GPL too. Third-party parts under other licenses that
 work with the GPL (Sirit, the Vulkan Memory Allocator, SDL, Opus, Dear ImGui, zstd, the Libertinus fonts, zbic and the
 a64-kit tools) keep their own notices in their folders. The Travel page's list of places follows the Fast Travel mod's

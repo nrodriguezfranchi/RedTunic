@@ -1129,7 +1129,12 @@ _CLANG = toolchain.find("clang")
 _native = None
 if not os.environ.get("RX_MARCH") and MARCH == "x86-64-v3" and os.path.isfile(_CLANG):
     _native = native_cpu(_CLANG, target() + ["-march=native"] + CPU[1:])
-    if _native:
+    if _native and re.fullmatch(r"znver[1-5]", _native.split("_", 1)[0]):
+        tune = _native.split("_", 1)[0]
+        CPU.append("-mtune=" + tune)
+        print("build: Red Tunic targets x86-64-v3, tuned for %s" % tune, flush=True)
+        _native = None
+    elif _native:
         MARCH, CPU[0] = "native", "-march=native"
 if MARCH == "native" and not _native:
     _native = native_cpu(toolchain.need(_CLANG), target() + CPU)

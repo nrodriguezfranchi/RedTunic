@@ -63,6 +63,11 @@ public partial class MainWindow : Window
         TrackBox.SelectionChanged += TrackChanged;
         pinned = BuilderSettings.Load(SettingsPath)?.Version;
         FillVersions(null);
+        if (Tools.Find()?.RedTunicRelease == true)
+        {
+            TrackLabel.Visibility = TrackBox.Visibility = Visibility.Collapsed;
+            VersionLabel.Visibility = VersionBox.Visibility = Visibility.Collapsed;
+        }
         VersionBox.DropDownOpened += VersionsOpened;
         VersionBox.SelectionChanged += VersionChanged;
         clock.Tick += (_, _) => Tick();
@@ -187,7 +192,7 @@ public partial class MainWindow : Window
         var game = OutPath.Text.Length > 2 ? GameVersion(OutPath.Text) : null;
         var builder = Tools.Find()?.Version;
         // (the newest release known: GitHub's, else this builder's own. v2.0.0 took a GitHub that did not answer for "up to date")
-        updateTarget = pinned ?? Updater.Target(latestTag, builder, Track);
+        updateTarget = Tools.Find()?.RedTunicRelease == true ? builder : pinned ?? Updater.Target(latestTag, builder, Track);
         if (game != null && updateTarget != null && game != updateTarget && !sourcePicked) mode = Mode.UpdateGame;
         else if (game != null && !sourcePicked) mode = Mode.UpToDate;
         else if (latestTag != null && builder != null && builder != updateTarget) mode = Mode.UpdateBuilder;
@@ -213,7 +218,9 @@ public partial class MainWindow : Window
                 break;
             case Mode.UpToDate:
                 FilesTitle.Text = "Your game is up to date";
-                FilesSub.Text = latestTag == null
+                FilesSub.Text = Tools.Find()?.RedTunicRelease == true
+                    ? $"Your game uses Red Tunic {game}. Check Red Tunic Releases for newer builder downloads."
+                    : latestTag == null
                     ? $"Your game is {game}, as this builder. git.notrexed.dev did not answer, so newer versions could not be checked."
                     : pinned != null ? $"{game} is the version chosen in the Version menu. Pick game files below only to build it again from scratch."
                     : $"{game} is the latest version. Pick game files below only to build it again from scratch.";
@@ -256,7 +263,8 @@ public partial class MainWindow : Window
         LaunchPlay.IsEnabled = File.Exists(GameExe(folder));
         ShowPage(LaunchPage);
         latestTag = await NewestTag();
-        updateTarget = pinned ?? Updater.Target(latestTag, Tools.Find()?.Version, Track);   // (the chosen version, the server's newest, else this builder's own)
+        var tools = Tools.Find();
+        updateTarget = tools?.RedTunicRelease == true ? tools.Version : pinned ?? Updater.Target(latestTag, tools?.Version, Track);
         if (updateTarget == null) LaunchStatus.Text = "Could not check for updates (git.notrexed.dev did not answer)";
         else if (game != null && game != updateTarget && GameVersion(folder) != null)
         {
@@ -267,7 +275,8 @@ public partial class MainWindow : Window
         }
         else if (game != null && game != updateTarget)
             LaunchStatus.Text = $"{updateTarget} is out: build this folder again with the Hookshot Builder to get it";
-        else LaunchStatus.Text = latestTag == null ? "Up to date with this builder (git.notrexed.dev did not answer)" : "Up to date";
+        else LaunchStatus.Text = tools?.RedTunicRelease == true ? "Matches this Red Tunic Builder"
+            : latestTag == null ? "Up to date with this builder (git.notrexed.dev did not answer)" : "Up to date";
     }
 
     /// (a folder built before it kept its game files has a version too: only shown)
@@ -313,11 +322,12 @@ public partial class MainWindow : Window
     }
     /// (a track other than these tools' own: its newest is installed, even an older version; or a version chosen in the Version
     /// menu: that one, older or newer)
-    bool Switching => pinned != null || Track != Updater.TrackOf(Tools.Find()?.Version);
+    bool Switching => Tools.Find()?.RedTunicRelease != true && (pinned != null || Track != Updater.TrackOf(Tools.Find()?.Version));
 
     /// The version to update to as far as the server says: the one chosen in the Version menu, else the track's newest (null: the
     /// server did not answer)
     async Task<string?> NewestTag() =>
+        Tools.Find()?.RedTunicRelease == true ? null :
         pinned ?? (Environment.GetEnvironmentVariable("HOOKSHOT_LATEST_TAG") is { Length: > 0 } fake ? (fake == "none" ? null : fake)
                    : await Updater.LatestTag(Track));
 
@@ -1537,7 +1547,8 @@ public partial class MainWindow : Window
             Application.Current.Shutdown();
             return;
         }
-        Process.Start(new ProcessStartInfo("https://git.notrexed.dev/Hookshot/Hookshot/releases/latest") { UseShellExecute = true });
+        Process.Start(new ProcessStartInfo(Tools.Find()?.RedTunicRelease == true ? Tools.RedTunicReleases :
+            "https://git.notrexed.dev/Hookshot/Hookshot/releases/latest") { UseShellExecute = true });
     }
 
     // ================= the update (Updater.cs): the game started this app with --update <folder> =================

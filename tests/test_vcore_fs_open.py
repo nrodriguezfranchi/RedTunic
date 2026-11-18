@@ -49,6 +49,7 @@ typedef unsigned long DWORD;
 #define FILE_SHARE_WRITE 2
 #define OPEN_EXISTING 3
 #define FILE_ATTRIBUTE_NORMAL 0x80
+#define FILE_FLAG_SEQUENTIAL_SCAN 0x08000000
 typedef struct { uint64_t x[32]; } Ctx;
 #define HLE(sym) void imp_##sym(Ctx *c)
 #define ARG(n) (c->x[n])
@@ -69,6 +70,7 @@ void hos_vcore_back(void) { if (!held) held = 1, takes++; }
 
 /* host_path: the mount's path (here, the build of a prompt file would run in it); -1 = not called */
 static int path_ok, path_writable, held_in_path, held_in_create, create_ok, blank;
+static DWORD create_flags;
 static int host_path(const char *g, char *out, size_t cap, int *writable) {
     held_in_path = held;
     snprintf(out, cap, "%s", g);
@@ -81,6 +83,7 @@ static DWORD GetFileAttributesA(const char *p) { (void)p; return INVALID_FILE_AT
 static HANDLE CreateFileA(const char *p, DWORD a, DWORD s, void *sa, DWORD d, DWORD f, HANDLE t) {
     (void)p, (void)a, (void)s, (void)sa, (void)d, (void)f, (void)t;
     held_in_create = held;
+    create_flags = f;
     return create_ok ? (HANDLE)(intptr_t)0x1234 : INVALID_HANDLE_VALUE;
 }
 typedef struct { HANDLE h; int writable; char path[HOS_FS_PATH]; } Handle;
@@ -114,6 +117,16 @@ int main(void) {
     path_ok = 1, path_writable = 0, create_ok = 1, blank = 0;
     uint64_t r = open_file("rom:/UI/LayoutArchive/Common.bntx.zs", 1, 1);
     check(r == 0, "a file of the game opens");
+#ifdef _WIN32
+    check(create_flags & FILE_FLAG_SEQUENTIAL_SCAN, "Windows prefetches a read-only compressed asset");
+    path_writable = 1;
+    r = open_file("save:/manual.ZS", 1, 1);
+    check(r == 0 && create_flags == FILE_ATTRIBUTE_NORMAL, "a writable mount keeps its normal flags");
+    path_writable = 0;
+    r = open_file("rom:/asset.bin", 1, 1);
+    check(r == 0 && create_flags == FILE_ATTRIBUTE_NORMAL, "an ordinary asset keeps its normal flags");
+    r = open_file("rom:/UI/LayoutArchive/Common.bntx.zs", 1, 1);
+#endif
     check(held_in_path == 0, "host_path (where a prompt file is built at its first open) runs without the core");
     check(held_in_create == 0, "CreateFileA runs without the core");
     check(held == 1 && takes == 1, "the core is held again after OpenFile, taken once");

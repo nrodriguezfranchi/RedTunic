@@ -82,7 +82,7 @@ bool screenshot_write(const std::string& path, const uint8_t* rgba, uint32_t w, 
     IWICBitmapEncoder* encoder = nullptr;
     IWICBitmapFrameEncode* frame = nullptr;
     WICPixelFormatGUID format = GUID_WICPixelFormat24bppBGR;
-    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_IWICImagingFactory, (void**)&factory);
+    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
     const char* step = "the imaging factory";
     if (SUCCEEDED(hr)) step = "the stream", hr = factory->CreateStream(&stream);
     if (SUCCEEDED(hr)) step = "the file", hr = stream->InitializeFromFilename(wide, GENERIC_WRITE);

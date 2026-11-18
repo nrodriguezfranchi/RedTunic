@@ -26,6 +26,7 @@ HEAD = r'''
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -42,9 +43,9 @@ struct VkComputePipelineCreateInfo {
 };
 // (no pipelineCreationCacheControl: the arm makes each pipeline with one call, the one guarded here. With it the arm asks the
 // caches first, through the same cached_compute: tests/test_pipeline_state_computes.py)
-struct {uintptr_t device=0x1234;struct{bool pipelineCreationCacheControl=false;}vk13;}dev;
+struct {uintptr_t device=0x1234;struct{bool pipelineCreationCacheControl=false;}vk13;struct{unsigned vendorID=0;}props;}dev;
 VkPipelineCache pcache=0x5678;
-struct Program {struct Stage{uintptr_t module;};std::vector<Stage>stages{{0x2468}};unsigned workgroup[3]{32,1,1};uintptr_t layout=0x1357;VkPipeline compute_pipeline=0xbeef;std::atomic<bool> optimize_owed{false};};
+struct Program {struct Stage{uintptr_t module;};std::vector<Stage>stages{{0x2468}};unsigned workgroup[3]{32,1,1};uintptr_t layout=0x1357;VkPipeline compute_pipeline=0xbeef;std::atomic<bool> optimize_owed{false};uint64_t key=0;};
 bool serial_builds_on(){return false;} bool intel_quick_compute(){return false;}   // (not Intel's one-at-a-time builds)
 struct Pre {std::mutex mu;bool abandoned=false;std::atomic<size_t> computes_cached{0},computes_compiled{0},computes_failed{0};};
 constexpr int VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT=0x1;

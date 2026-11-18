@@ -42,6 +42,7 @@
 #include "shaders/fg_luma_comp_spv.h"
 #include "shaders/fg_median_comp_spv.h"
 #include "shaders/fg_scale_comp_spv.h"
+#include "shaders/fg_scale_fp16_comp_spv.h"
 #include "shaders/fg_scale_pq_comp_spv.h"   // (fg_scale.comp with FG_SCALE_PQ: an RGB10A2 destination)
 #include "shaders/fg_synth_comp_spv.h"
 #include "shaders/hdr_encode_comp_spv.h"
@@ -356,7 +357,11 @@ bool init_scale() {
     scale.init = scale.failed = true;
     if (!dev.push_descriptor || !vkCmdPushDescriptorSetKHR) return false;
     const VkDescriptorType S = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, I = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    if (make_pipe(scale.pipe, BUILTIN_SPV_ARGS(FG_SCALE_COMP_SPV), {S, I, S}, 24)) {
+    const bool fp16 = dev.props.vendorID == 0x1002 && dev.vk12.shaderFloat16 &&
+        !env_on("RX_VK_NO_F16") && env_on("RX_VK_SHARPEN_FP16") &&
+        make_pipe(scale.pipe, BUILTIN_SPV_ARGS(FG_SCALE_FP16_COMP_SPV), {S, I, S}, 24);
+    if (fp16 || make_pipe(scale.pipe, BUILTIN_SPV_ARGS(FG_SCALE_COMP_SPV), {S, I, S}, 24)) {
+        if (fp16) logf("vk: SDR window sharpening uses FP16 color taps");
         VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
         si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         si.maxLod = 0.25f;

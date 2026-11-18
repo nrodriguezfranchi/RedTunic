@@ -6,6 +6,9 @@ namespace HookshotBuilder;
 /// Where nx2/make_game.py and its Python are: a "tools" folder beside the app when packaged, or the source tree it sits in.
 sealed record Tools(string Root, string Python, string[]? PythonArgs = null)
 {
+    public const string RedTunicReleases = "https://github.com/spacefarergames/RedTunic/releases";
+    public bool RedTunicRelease => File.Exists(Path.Combine(Root, "red-tunic-release.txt"));
+
     /// The toolchain's switches a game folder's build was made with (BuildRecord.cs): set over the others, so a rebuild is
     /// that build again
     public IReadOnlyDictionary<string, string>? Env { get; init; }

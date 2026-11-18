@@ -4,18 +4,18 @@
              StartupUri="MainWindow.xaml">
   <Application.Resources>
 
-    <!-- Slate, frosted (the approved installer design: Desktop\loader\index.html, "Installer") -->
-    <SolidColorBrush x:Key="Page" Color="#14161A"/>
-    <SolidColorBrush x:Key="Raised" Color="#1C1F24"/>
-    <SolidColorBrush x:Key="RaisedHover" Color="#23272D"/>
-    <SolidColorBrush x:Key="Line" Color="#2C3037"/>
-    <SolidColorBrush x:Key="LineStrong" Color="#3D434C"/>
-    <SolidColorBrush x:Key="Ink" Color="#EDEFF2"/>
-    <SolidColorBrush x:Key="InkSoft" Color="#A2A9B3"/>
-    <SolidColorBrush x:Key="InkFaint" Color="#6E7681"/>
-    <SolidColorBrush x:Key="Brand" Color="#3D63E6"/>
-    <SolidColorBrush x:Key="BrandHover" Color="#4B70F0"/>
-    <SolidColorBrush x:Key="BrandInk" Color="#DFE6FF"/>
+    <!-- Red Tunic palette -->
+    <SolidColorBrush x:Key="Page" Color="#1A1115"/>
+    <SolidColorBrush x:Key="Raised" Color="#281A20"/>
+    <SolidColorBrush x:Key="RaisedHover" Color="#332129"/>
+    <SolidColorBrush x:Key="Line" Color="#49313A"/>
+    <SolidColorBrush x:Key="LineStrong" Color="#654450"/>
+    <SolidColorBrush x:Key="Ink" Color="#F6E9E6"/>
+    <SolidColorBrush x:Key="InkSoft" Color="#C1A8AC"/>
+    <SolidColorBrush x:Key="InkFaint" Color="#A68A90"/>
+    <SolidColorBrush x:Key="Brand" Color="#9C3445"/>
+    <SolidColorBrush x:Key="BrandHover" Color="#B84150"/>
+    <SolidColorBrush x:Key="BrandInk" Color="#FFE9E4"/>
     <SolidColorBrush x:Key="Go" Color="#5FB08A"/>
     <SolidColorBrush x:Key="GoHover" Color="#70C09A"/>
     <SolidColorBrush x:Key="GoInk" Color="#06150E"/>
@@ -32,7 +32,7 @@
     <SolidColorBrush x:Key="GoSoft" Color="#265FB08A"/>
     <SolidColorBrush x:Key="BadSoft" Color="#26E2776B"/>
     <SolidColorBrush x:Key="WarnSoft" Color="#1FE2B86B"/>
-    <SolidColorBrush x:Key="BrandSoft" Color="#333D63E6"/>
+    <SolidColorBrush x:Key="BrandSoft" Color="#339C3445"/>
 
     <FontFamily x:Key="Ui">pack://application:,,,/Fonts/#Inter</FontFamily>
     <FontFamily x:Key="Display">pack://application:,,,/Fonts/#Inter</FontFamily>
@@ -138,7 +138,7 @@
             <Border x:Name="Box" Background="{StaticResource Brand}" BorderBrush="#33FFFFFF" BorderThickness="1" CornerRadius="8"
                     Padding="{TemplateBinding Padding}">
               <Border.Effect>
-                <DropShadowEffect x:Name="Glow" Color="#3D63E6" BlurRadius="22" ShadowDepth="6" Direction="270" Opacity="0.55"/>
+                <DropShadowEffect x:Name="Glow" Color="#9C3445" BlurRadius="22" ShadowDepth="6" Direction="270" Opacity="0.55"/>
               </Border.Effect>
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
             </Border>

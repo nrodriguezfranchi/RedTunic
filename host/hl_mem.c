@@ -137,20 +137,19 @@ static void cold_slice(int kind, uint64_t a, uint64_t b) {
 }
 
 /* [a, b) in slices that end at 1 MB boundaries; returns the pages looked at */
-static int64_t cold_range(int kind, uint64_t a, uint64_t b) {
-    int64_t pages = 0;
-    while (a < b) {
+static uint64_t cold_range(int kind, uint64_t a, uint64_t b, int64_t deadline, int first) {
+    while (a < b && (first || hos_now_ns() < deadline)) {
+        first = 0;
         uint64_t end = (a | 0xFFFFF) + 1;
         if (end > b) end = b;
         cold_slice(kind, a, end);
-        pages += (int64_t)((end - a) >> 12);
         a = end;
     }
-    return pages;
+    return a;
 }
 
 /* ---- the pools: those with the chosen flags made HL_MEM_COLD_AGE ago or more, from where the last pass stopped */
-static void pools_pass(void) {
+static void pools_pass(int64_t budget_ns) {
     static uint64_t ranges[16384][2];
     static uint64_t cursor;   /* (where the next pass goes on: the scan is spread over passes) */
     const int n = hos_pools_with_flags(cold_flags, cold_nflags, hos_now_ns() - cold_age_ns, ranges, 16384);
@@ -165,11 +164,12 @@ static void pools_pass(void) {
     int i = 0;
     while (i < n && ranges[i][1] <= cursor) i++;
     if (i == n) i = 0, cursor = 0;
+    const int64_t deadline = hos_now_ns() + budget_ns;
     int64_t scanned = 0;
     for (int visited = 0; n && visited <= n && scanned < COLD_SCAN_PAGES; visited++) {
         const uint64_t hi = ranges[i][1];
         uint64_t at = ranges[i][0] > cursor ? ranges[i][0] : cursor;
-        while (at < hi && scanned < COLD_SCAN_PAGES) {
+        while (at < hi && scanned < COLD_SCAN_PAGES && hos_now_ns() < deadline) {
             uint64_t end = (at | 0xFFFFF) + 1;   /* (to the next 1 MB boundary: whole units in a slice) */
             if (end > hi) end = hi;
             cold_slice(HL_MEM_COLD_POOLS, at, end);
@@ -230,13 +230,14 @@ static int heaps_listed(void) {
     }
     return m;
 }
-static void heaps_pass_listed(void) {
+static void heaps_pass_listed(int64_t budget_ns) {
     static uint64_t at = HOS_HEAP_BASE;   /* (unit aligned) */
     const int ne = heaps_excluded(), nl = heaps_listed();
     hl_mem_cold_pass(HL_MEM_COLD_HEAPS);
     int e = 0, l = 0;
     while (l < nl && listed[l][1] <= at) l++;
     int64_t scanned = 0;
+    const int64_t deadline = hos_now_ns() + budget_ns;
     for (; scanned < COLD_LIST_SCAN_PAGES; l++) {
         if (l >= nl) {   /* (a sweep done: the next pass starts again at the bottom) */
             at = HOS_HEAP_BASE;
@@ -251,21 +252,24 @@ static void heaps_pass_listed(void) {
             while (e < ne && excluded[e][1] <= a) e++;
             if (e < ne && excluded[e][0] <= a) { a = excluded[e][1]; continue; }
             const uint64_t b = e < ne && excluded[e][0] < hi ? excluded[e][0] : hi;
-            scanned += cold_range(HL_MEM_COLD_HEAPS, a, b);
-            a = b;
+            const uint64_t next = cold_range(HL_MEM_COLD_HEAPS, a, b, deadline, scanned == 0);
+            scanned += (int64_t)((next - a) >> 12);
+            if (next < b) { at = next; return; }
+            a = next;
         }
         at = hi;
         if (hi < listed[l][1]) break;   /* (the pass's looks are spent inside this range) */
     }
 }
 
-static void heaps_pass(void) {
+static void heaps_pass(int64_t budget_ns) {
     static uint64_t at = HOS_HEAP_BASE;   /* (unit aligned) */
     const int ne = heaps_excluded();
     hl_mem_cold_pass(HL_MEM_COLD_HEAPS);
     int e = 0;
     int64_t scanned = 0;
-    for (int queries = 0; scanned < COLD_SCAN_PAGES && queries < COLD_HEAP_QUERIES; queries++) {
+    const int64_t deadline = hos_now_ns() + budget_ns;
+    for (int queries = 0; scanned < COLD_SCAN_PAGES && queries < COLD_HEAP_QUERIES && hos_now_ns() < deadline; queries++) {
         if (at >= HOS_GUEST_SPACE) {   /* (a sweep done: the next pass starts again at the bottom) */
             at = HOS_HEAP_BASE;
             heap_sweeps++;
@@ -292,8 +296,10 @@ static void heaps_pass(void) {
             while (e < ne && excluded[e][1] <= a) e++;
             if (e < ne && excluded[e][0] <= a) { a = excluded[e][1]; continue; }
             const uint64_t b = e < ne && excluded[e][0] < hi ? excluded[e][0] : hi;
-            scanned += cold_range(HL_MEM_COLD_HEAPS, a, b);
-            a = b;
+            const uint64_t next = cold_range(HL_MEM_COLD_HEAPS, a, b, deadline, scanned == 0);
+            scanned += (int64_t)((next - a) >> 12);
+            if (next < b) { at = next; return; }
+            a = next;
         }
         at = hi;
     }
@@ -311,15 +317,17 @@ static DWORD WINAPI cold_main(void *unused) {
         const int64_t t0 = hos_now_ns();
         const int64_t unlocks0 = cold_unlocks, queries0 = cold_queries;
         cold_max_ws = cold_max_unlock = cold_max_query = 0;
-        pools_pass();
+        // Give each scan its own slice so a slow pool operation cannot starve the heap scan.
+        const int64_t scan_budget_ns = 1000000;
+        pools_pass(scan_budget_ns);
         const int64_t t1 = hos_now_ns(), unlocks1 = cold_unlocks;
         if (heaps_on) {
             const uint64_t back = hl_mem_cold_back_pages(HL_MEM_COLD_POOLS) + hl_mem_cold_back_pages(HL_MEM_COLD_HEAPS);
             if (++passes > 2 && back - back_before[1] >= COLD_QUIET_PAGES) quiet_left = COLD_QUIET_PASSES;
             back_before[1] = back_before[0], back_before[0] = back;
             if (quiet_left > 0) quiet_left--, quiet_passes++, hl_mem_cold_pass(HL_MEM_COLD_HEAPS);   /* (holds count on) */
-            else if (heaps_listed_on) heaps_pass_listed();
-            else heaps_pass();
+            else if (heaps_listed_on) heaps_pass_listed(scan_budget_ns);
+            else heaps_pass(scan_budget_ns);
         }
         const int64_t t2 = hos_now_ns();
         /* (a pass of 100 ms or more, alone, with its calls: such passes came with the 250 ms frames of the v0.4.0

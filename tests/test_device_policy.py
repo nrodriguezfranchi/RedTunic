@@ -135,7 +135,7 @@ PCS = [
     dict(name="RX 6800 XT, RADV",
          facts=(0x1002, 0x73BF, "MESA_RADV", 0, "DISCRETE_GPU", "Mesa 26.2.5", "AMD Radeon RX 6800 XT (RADV NAVI21)", 0, 0,
                 16368, 16000, 32000, 16, 16, 1, 1, 1, 0, 0, 1, 1, 64, 64, 0xFF),
-         on="fetch_bounds networks_left_out gather_offset position_invariant dma_buf_imports allowance_at_count_rule mirrors "
+         on="fetch_bounds networks_left_out gather_offset frag_shuffle_fallback position_invariant dma_buf_imports allowance_at_count_rule mirrors "
             "split_ub_flush warp64 batch_submits mma_unroll_try fsr4_tune room_in_blocks_rule threaded_auto_cpus",
          num=(0, 2, 0, 1, 85, 4, 11000, 3072, 768, 512, 2000, -1, 256, 24, 64, 32, 97, 5, 6, 4, 8, 6, 4)),
     # (GCN: no batched submits, the phi limit. Its heap is 8192 MB exactly: the small blocks (<= 8 GB) and the large
@@ -144,7 +144,7 @@ PCS = [
     dict(name="RX 580 (8 GB), RADV on GCN",
          facts=(0x1002, 0x67DF, "MESA_RADV", 0, "DISCRETE_GPU", "Mesa 26.2.5", "AMD Radeon RX 580 Series (RADV POLARIS10)", 0, 0,
                 8192, 8000, 16000, 8, 8, 0, 1, 1, 0, 0, 0, 1, 64, 64, 0),
-         on="fetch_bounds networks_left_out gather_offset position_invariant dma_buf_imports allowance_at_count_rule mirrors "
+         on="fetch_bounds networks_left_out gather_offset frag_shuffle_fallback position_invariant dma_buf_imports allowance_at_count_rule mirrors "
             "split_ub_flush warp64 mma_unroll_try fsr4_tune astc_bc_all room_in_blocks_rule squeeze_damped "
             "drop_modules_small_ram threaded_auto_cpus",
          num=(0, 2, 50000, 1, 85, 4, 4778, 2048, 666, 500, 1000, -1, 256, 24, 32, 16, 97, 1, 2, 2, 4, 4, 2)),
@@ -154,7 +154,7 @@ PCS = [
     dict(name="RX Vega 64 (8 GB), RADV on GFX9",
          facts=(0x1002, 0x687F, "MESA_RADV", 0, "DISCRETE_GPU", "Mesa 26.2.5", "AMD Radeon RX Vega (RADV VEGA10)", 0, 0,
                 8176, 7900, 16000, 8, 8, 0, 1, 1, 0, 0, 1, 1, 64, 64, 0),
-         on="fetch_bounds networks_left_out gather_offset position_invariant dma_buf_imports allowance_at_count_rule mirrors split_ub_flush "
+         on="fetch_bounds networks_left_out gather_offset frag_shuffle_fallback position_invariant dma_buf_imports allowance_at_count_rule mirrors split_ub_flush "
             "warp64 batch_submits mma_unroll_try fsr4_tune astc_bc_all room_in_blocks_rule squeeze_damped "
             "drop_modules_small_ram threaded_auto_cpus",
          num=(0, 2, 0, 1, 85, 4, 4769, 2044, 658, 493, 987, -1, 256, 12, 32, 16, 97, 1, 2, 2, 4, 4, 2)),
@@ -164,7 +164,7 @@ PCS = [
     dict(name="Steam Deck (LCD), RADV",
          facts=(0x1002, 0x163F, "MESA_RADV", 0, "INTEGRATED_GPU", "Mesa 25.1.0", "AMD Custom GPU 0405 (RADV VANGOGH)", 0, 1,
                 7168, 6800, 14800, 8, 8, 1, 1, 1, 0, 0, 1, 1, 64, 64, 0xFF),
-         on="fetch_bounds networks_left_out gather_offset position_invariant dma_buf_imports allowance_at_count_rule "
+         on="fetch_bounds networks_left_out gather_offset frag_shuffle_fallback position_invariant dma_buf_imports allowance_at_count_rule "
             "split_ub_flush warp64 batch_submits mma_unroll_try fsr4_tune gpu_clock_peak small_vram_textures astc_bc_all "
             "squeeze_damped linux_hold_caps_budget drop_modules_small_ram threaded_auto_cpus",
          num=(0, 2, 0, 1, 85, 16, 2560, 1792, 566, 425, 512, -1, 256, 0, 32, 16, 90, 1, 2, 2, 4, 4, 2)),
@@ -249,7 +249,7 @@ PCS = [
          facts=(0x1002, 0x164E, "AMD_PROPRIETARY", 0x800161, "INTEGRATED_GPU", "26.10.1 " + AMD_OLD, "AMD Radeon(TM) Graphics", 1, 0,
                 16300, 10232, 32600, 24, 8, 1, 1, 0, 0, 0, 1, 1, 64, 64, 0xFF),
          on="fetch_bounds networks_left_out nan_bits gather_offset frag_shuffle_fallback position_invariant mesh_no_optimizer "
-            "amd_cloth_no_optimizer fault_gate_serial astc_on_cpu allowance_at_count_rule split_ub_flush warp64 fsr4_tune "
+            "amd_cloth_no_optimizer fault_gate_serial astc_on_cpu allowance_at_count_rule split_ub_flush warp64 occ_copy fsr4_tune "
             "astc_bc_all threaded_auto_cpus",
          num=(0, 0, 0, 2, 85, 16, 4096, 3072, 768, 512, 512, -1, 256, 0, 64, 32, 90, 1, 6, 4, 8, 6, 4)),
 ]
@@ -294,6 +294,7 @@ ENV = [
     (B580, {"RX_VK_PCACHE_FETCH_LOCK": "", "RX_VK_SPLIT_BEFORE_DRAW": "", "RX_VK_UB_SNAPSHOT": "", "RX_VK_OCC_COPY": ""},
      {}, [], []),                                                                      # (each was off)
     (NVIDIA, {"RX_VK_OCC_COPY": "on"}, {"occ_copy": 1}, ["occ_copy"], []),             # (was off: read as a number)
+    (RAPHAEL, {"RX_VK_OCC_COPY": "0"}, {"occ_copy": 0}, ["occ_copy"], []),
     # the mirrors, and what follows them: the import chunk, and on Intel the uniform updates at each part's end
     (NVIDIA, {"RX_VK_MIRROR": "0"}, {"mirrors": 0, "import_chunk_mb": 16}, ["mirrors"], []),
     (NVIDIA, {"RX_VK_MIRROR": "off"}, {"mirrors": 0, "import_chunk_mb": 16}, ["mirrors"], []),

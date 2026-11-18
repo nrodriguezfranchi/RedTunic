@@ -1,15 +1,9 @@
-"""The game's own name and icon, read from its .nup, for what the build makes of them: the window's title and icon, and on
-Windows the exe's icon and the name Windows shows for it (Task Manager, the taskbar, its Properties). Without them the game
-was "Hookshot" with no icon.
+"""Install Red Tunic's game title and icon and build the Windows executable resources.
 
-    python -I nx2/game_title.py <file.nup>          the name and the icon's size, nothing written
+    python -I nx2/game_title.py <file.nup>          read the original title and icon size without writing files
 
 A .nup title's metadata (nx2/nup.py, at +0x20 of its record) is a list of records, each u32 kind, u32 size, then its bytes:
-1 the NPDM, 3 the icon (a JPEG), 4 the version ("1.1.1"), 5 the name, 8 a short name (seen on Ocarina of Time 1.1.1).
-
-What is read is kept in the game folder, so an update (built from the folder, with no .nup) makes them again, and the game
-reads the title from there: hookshot_title.txt (its first line, the window's title: host/hos_paths.h hos_game_title) and
-.hookshot_icon.jpg (the icon as the game has it). Both are the player's own game's and stay in the folder.
+1 the NPDM, 3 the icon (a JPEG), 4 the version ("1.1.1"), 5 the name, 8 a short name.
 """
 import os
 import struct
@@ -22,6 +16,10 @@ TITLE_FILE = "hookshot_title.txt"
 ICON_FILE = ".hookshot_icon.jpg"
 RES_FILE = "hookshot_game.res"   # (in the work folder: linked into the exe instead of a developer's hookshot.res, nx2/build.py)
 SUFFIX = " (Hookshot)"
+RED_TUNIC_TITLE = "Red Tunic"
+RED_TUNIC_ICON_FILE = ".red_tunic_icon.png"
+RED_TUNIC_ICON = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "red-tunic.png")
+
 ICON, NAME = 3, 5
 # (the names in a .nup are fit for a file name: its dumper drops what Windows refuses in one, so the colon of the name the game
 # itself shows is gone. These are the names as the games write them, by title id)
@@ -80,6 +78,13 @@ def write_if_changed(path, data):
     os.replace(path + ".new", path)
 
 
+def keep_red_tunic(out):
+    """Install the fork's title and artwork for both fresh builds and updates."""
+    write_if_changed(os.path.join(out, TITLE_FILE), (RED_TUNIC_TITLE + "\n").encode("utf-8"))
+    with open(RED_TUNIC_ICON, "rb") as f:
+        write_if_changed(os.path.join(out, RED_TUNIC_ICON_FILE), f.read())
+
+
 def keep(out, name, icon):
     """the folder's copy of what was read"""
     if name:
@@ -89,7 +94,7 @@ def keep(out, name, icon):
 
 
 def kept(out):
-    """(window title, icon JPEG bytes or None) the folder has, or (None, None)"""
+    """(window title, icon image bytes) the folder has, each None if unavailable."""
     title = icon = None
     try:
         with open(os.path.join(out, TITLE_FILE), encoding="utf-8") as f:
@@ -97,7 +102,8 @@ def kept(out):
     except (OSError, UnicodeDecodeError):
         pass
     try:
-        with open(os.path.join(out, ICON_FILE), "rb") as f:
+        icon_file = RED_TUNIC_ICON_FILE if title == RED_TUNIC_TITLE else ICON_FILE
+        with open(os.path.join(out, icon_file), "rb") as f:
             icon = f.read() or None
     except OSError:
         pass
@@ -124,20 +130,39 @@ def write_res(out, path):
     neither, so a developer's own hookshot.res (nx2/make_icon.py) is linked instead"""
     import make_icon
     title, icon = kept(out)
-    im = picture(icon)
+    bundled = title == RED_TUNIC_TITLE
+    im = picture(icon) if not bundled else None
     if not title and im is None:
         if os.path.exists(path):
             os.remove(path)
         return False
     strings = {"FileDescription": title, "ProductName": title, "InternalName": "hookshot",
                "OriginalFilename": "hookshot.exe"} if title else None
-    write_if_changed(path, make_icon.res_of(make_icon.images_of(im) if im is not None else (), strings))
+    file_version = (0, 0, 0, 0)
+    if bundled:
+        import re
+        import version
+        release = version.release().removeprefix("v")
+        strings.update(FileVersion=release, ProductVersion=release)
+        match = re.match(r"^(\d{1,5})\.(\d{1,5})\.(\d{1,5})", release)
+        if match:
+            file_version = (*[min(int(part), 65535) for part in match.groups()], 0)
+    if bundled:
+        with open(os.path.splitext(RED_TUNIC_ICON)[0] + ".ico", "rb") as f:
+            images = make_icon.images_from_ico(f.read())
+    else:
+        images = make_icon.images_of(im) if im is not None else ()
+    write_if_changed(path, make_icon.res_of(images, strings, file_version))
     return True
 
 
 def write_png(out, path, size=256):
     """(Linux) the window's icon at path, from the game's; False when the folder has none to make it from"""
-    im = picture(kept(out)[1])
+    title, icon = kept(out)
+    if title == RED_TUNIC_TITLE and icon:
+        write_if_changed(path, icon)
+        return True
+    im = picture(icon)
     if im is None:
         return False
     import make_icon
