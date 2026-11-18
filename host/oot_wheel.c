@@ -1,4 +1,4 @@
-/* (relink) The R button's item choice as a wheel, Twilight Princess style (the Gameplay tab's Item wheel row).
+/* (hookshot) The R button's item choice as a wheel, Twilight Princess style (the Gameplay tab's Item wheel row).
 
    f_802f1380 is every menu screen's update (each frame, with the screen in x0; nx2/oot_patches.py has it call
    hos_wheel_menu_tick here first). The R item row's screen has the vtable
@@ -24,7 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* a switch of the environment (relink_env.txt): set and not 0 */
+/* a switch of the environment (hookshot_env.txt): set and not 0 */
 static int env_on(const char *name) {
     const char *e = getenv(name);
     return e && *e && strcmp(e, "0") != 0;
@@ -77,7 +77,7 @@ static int ident_at(uint64_t a, char *buf, size_t cap) {
 static const struct { const char *name, *label; } item_labels[] = {
     OOT_CHEAT_ITEMS(WHEEL_SECTION, WHEEL_ITEM)
 };
-/* (relink) Two bottles of the same content (two fairies) are two places of the row with one name: the wheel keeps the second
+/* (hookshot) Two bottles of the same content (two fairies) are two places of the row with one name: the wheel keeps the second
    as "<name>#2" (the third "#3"), its own item and slot, and this is the game's name of either */
 static void plain_name(const char *name, char *out, size_t cap) {
     snprintf(out, cap, "%s", name);
@@ -428,7 +428,7 @@ static void layout_defaults(void) {
             for (int s = 0; s < MKWVK_WHEEL_SLOTS; s++) snprintf(layouts[a].slot[p][s], sizeof layouts[a].slot[p][s], "%s", src[p][s]);
     }
 }
-/* wheel_layout.txt beside relink_options.ini, in the game folder (an update builds the folder again and keeps both) */
+/* wheel_layout.txt beside hookshot_options.ini, in the game folder (an update builds the folder again and keeps both) */
 static int layout_path(char *out, size_t cap) {
     char path[MAX_PATH];
     if (!hos_game_path_a(path, MAX_PATH)) return 0;
@@ -446,7 +446,7 @@ static void layout_save(void) {
         hos_log("wheel: %s could not be written: the pages stay as they are until the game ends", path);
         return;
     }
-    fprintf(f, "# ReLink: the item wheel's pages (R held), one line a page: child or adult, the page's number, then its 8 slots\n"
+    fprintf(f, "# Hookshot: the item wheel's pages (R held), one line a page: child or adult, the page's number, then its 8 slots\n"
                "# from the top, clockwise (- an empty slot, Item_Bottle* any bottle; a bottle's own content first, then any\n"
                "# bottle in a bottle slot left empty). In the wheel: Y on an item, then Y on the\n"
                "# slot to put it in. This file is written again at each move; delete it for the pages the game starts with.\n");
@@ -665,7 +665,7 @@ static void wheel_tick(Ctx *c, uint64_t screen, int opened) {
         choice_name[0] = 0;
         if (key >= 0 && key < LAYOUT_MAX && at[key] >= 0) memcpy(choice_name, item_names[at[key]], sizeof choice_name);
         if (choice_name[0]) memcpy(shown_name, choice_name, sizeof shown_name);
-        plain_name(shown_name, choice_name, sizeof choice_name);   /* (relink: the game's name, a second bottle's too) */
+        plain_name(shown_name, choice_name, sizeof choice_name);   /* (hookshot: the game's name, a second bottle's too) */
         if (!(key >= 0 && key < LAYOUT_MAX && at[key] >= 0)) choice_name[0] = 0;
         /* (its number in the game: the wheel puts it on ZR itself once the row has closed, the row left where it was) */
         const int item = choice_name[0] ? cy_item_of_name(c, choice_name) : -1;
@@ -742,7 +742,7 @@ static void wheel_tick(Ctx *c, uint64_t screen, int opened) {
    by default) R or L opens the wheel as before. The groups: the bow and its three arrows, the bottles (the pouch's five
    bottle slots, in their order), Din's Fire, Farore's Wind and Nayru's Love; with 2 also the Bomb and the Bombchu, with 3
    also the Hookshot (or the Longshot) and the Megaton Hammer, and the child's Slingshot and Boomerang. Only items the game would list in its own row now count
-   (owned, usable at Link's age). (relink) 4, Last used: a tap of R or L puts back the item that was on ZR before this one,
+   (owned, usable at Link's age). (hookshot) 4, Last used: a tap of R or L puts back the item that was on ZR before this one,
    whatever it is (two taps: back to the first): a quick switch.
    The game's calls (the lifted addresses, and the item numbers, PouchMgr's AssignableItem: 0 DekuStick .. 53 NormalLure)
    are those PR #2151 (item assignable buttons) found: PouchMgr::getAssignableItem and setAssignableItem, and the walk of
@@ -766,7 +766,7 @@ static volatile int64_t hud_tick_ns, pause_tick_ns;   /* (the HUD's and the paus
 static volatile int cycle_seq, cycle_dir;             /* (the input side's taps: +1 R, -1 L) */
 
 static int cycle_level(void) {   /* 0 off, 1 the arrows, bottles and spells, 2 and bombs, 3 and the hookshot and hammer,
-                                    4 (relink) the item on ZR before this one */
+                                    4 (hookshot) the item on ZR before this one */
     int rx_option(int id, int otherwise);
     static int forced = -2;
     if (forced == -2) {
@@ -961,7 +961,7 @@ static void equip_now(Ctx *c, int item) {
     if (at > 0) row_to_front(at);
     if (wheel_trace()) hos_log("wheel: %s (item %d) put on ZR", equip_name, item);
 }
-/* (relink) Last used: the item on ZR now and the one before it, for each age (PouchMgr's: 0 the adult, 1 the child), followed
+/* (hookshot) Last used: the item on ZR now and the one before it, for each age (PouchMgr's: 0 the adult, 1 the child), followed
    at the HUD's updates a few times a second (zr_follow), whatever put them there: the wheel, the game's row, a tap */
 static int zr_now[2] = {-1, -1}, zr_before[2] = {-1, -1};
 static void zr_follow(Ctx *c, int64_t now) {
@@ -976,7 +976,7 @@ static void zr_follow(Ctx *c, int64_t now) {
     if (cur < 0 || cur >= CY_ITEMS || cur == zr_now[age]) return;
     zr_before[age] = zr_now[age], zr_now[age] = cur;
 }
-/* (relink) Last used's tap: the item on ZR before this one put back, when the game would still list it */
+/* (hookshot) Last used's tap: the item on ZR before this one put back, when the game would still list it */
 static void cycle_last(Ctx *c) {
     const uint64_t mgr = cy_peek(CY_POUCH_SLOT, 8), ui = cy_peek(CY_UI_SLOT, 8);
     if (!mgr || !ui || !a64_lookup(CY_GETTER) || !a64_lookup(CY_SETTER)) return;
@@ -1000,7 +1000,7 @@ static void cycle_last(Ctx *c) {
 }
 /* a tap: the ZR item's group's next (dir +1) or previous (-1) listable item put on ZR */
 static void cycle_now(Ctx *c, int dir, int level) {
-    if (level >= 4) {   /* (relink: Last used) */
+    if (level >= 4) {   /* (hookshot: Last used) */
         cycle_last(c);
         return;
     }
@@ -1216,8 +1216,8 @@ uint64_t hos_wheel_input(uint64_t buttons, int32_t stick[4]) {
     int turn = (pressed & ((1ULL << B_RIGHT) | (1ULL << B_ZR))) ? 1 : (pressed & ((1ULL << B_LEFT) | (1ULL << B_ZL))) ? -1 : 0;
     {   /* (the mouse wheel too: down the next page, up the one before; read each frame the wheel is open, display.c keeps
            its notches only while they are read) */
-        int hos_mouse_wheel_take(void);
-        const int notches = hos_mouse_wheel_take();
+        int hos_wheel_notches_take(void);
+        const int notches = hos_wheel_notches_take();
         if (!turn && notches) turn = notches > 0 ? -1 : 1;
     }
     buttons &= ~((1ULL << B_LEFT) | (1ULL << B_RIGHT) | (1ULL << B_UP) | (1ULL << B_DOWN) | (1ULL << B_ZL) | (1ULL << B_ZR));
@@ -1417,7 +1417,7 @@ int hos_wheel_menu_tick(Ctx *c, uint64_t screen_arg) {
             equip_now(c, __atomic_load_n(&equip_item, __ATOMIC_ACQUIRE));
             __atomic_store_n(&state_lock, 0, __ATOMIC_RELEASE);
         }
-        if (cycle_level() >= 4) zr_follow(c, hos_now_ns());   /* (relink: Last used's history of ZR's item) */
+        if (cycle_level() >= 4) zr_follow(c, hos_now_ns());   /* (hookshot: Last used's history of ZR's item) */
         if (seq != cycle_seen && !__atomic_exchange_n(&state_lock, 1, __ATOMIC_ACQUIRE)) {
             cycle_seen = seq;
             const int level = cycle_level();

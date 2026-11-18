@@ -7,21 +7,22 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
-#include <deque>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include "bank_write.h"
 #include "vk_internal.h"
-#include "vk_texture.h"
 #include "vk_state.h"
+#ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
+#include "hookshot_env.h"
+#endif
 
 namespace mkwvk {
-// (relink) the seed's compute programs (vk_shader.cpp seed_program) have no bound program to read their layout from. Translated
+// (hookshot) the seed's compute programs (vk_shader.cpp seed_program) have no bound program to read their layout from. Translated
 // with Maxwell's table instead, one kept the right key and the wrong storage buffers, and play would have used it as it was
 thread_local const uint8_t* seed_cs_control = nullptr;
 namespace {
@@ -36,23 +37,29 @@ struct SampReg {
     bool ok = false;
 };
 std::mutex reg_mu;
-std::unordered_map<uint64_t, uint64_t> first_reg_frame;   // (relink, diagnostic: texture_first_registered below)
 std::vector<TexReg> tex_regs;
 std::vector<SampReg> samp_regs;
 std::unordered_map<uint64_t, std::vector<int>> regs_by_serial;
-// (relink) textures made ahead of their first draw (vk_texture.cpp texture_prefetch_some): each texture object the game
-// registers for the first time (a new serial) is queued; its image is made a few at a time between frames
-std::deque<nvn_tex> prefetch_q;
-std::unordered_set<uint64_t> prefetch_seen;
 std::atomic<uint64_t> reg_gen{1};   // (bumped by every texture registration: resolved handles go stale)
 std::atomic<uint64_t> samp_gen{1};  // (bumped when a sampler registration's contents change: sampler_for's cache, vk_draw.cpp)
 // (and a version a slot: caches of what a slot resolves to check theirs, not every registration's)
+// The order of the two bumps is part of what their readers rely on: a writer changes the slot, bumps the slot's version,
+// and bumps reg_gen LAST, all under reg_mu. The readers (program_for in vk_shader.cpp, the descriptor reuse in vk_draw.cpp)
+// read reg_gen first, without the lock, then check or resolve the slots, and keep the result under the reg_gen they read.
+// So a reader that saw the new reg_gen finds every slot version already new and resolves the new contents, and one that
+// saw the old reg_gen looks again once it changes. With reg_gen bumped first, a reader between the two bumps would read
+// the new reg_gen and the slot's old version, take what it had cached for that version (texture_answer, a pick's handles)
+// as checked, and keep it under the new reg_gen: nothing would make it look again until the next registration.
 constexpr int kSlotVersions = 1 << 20;
 std::unique_ptr<std::atomic<uint32_t>[]> slot_versions{new std::atomic<uint32_t>[kSlotVersions]()};
+// (hookshot, RX_VK_SAMPLER_CACHE: the same for sampler ids, so what a sampler id resolves to can be cached and checked
+// without taking reg_mu, and descriptor reuse can tell that a sampler was registered anew)
+constexpr int kSampVersions = 1 << 12;
+std::unique_ptr<std::atomic<uint32_t>[]> samp_versions{new std::atomic<uint32_t>[kSampVersions]()};
 
 // NVN2 compute's c0: the workgroup counts at 0, then the uniform buffer table, the storage buffer table, texture
 // handles and image handles, as many slots of each as the control section says (+0xb1, +0xb2, +0xb3, +0xb6)
-// (relink) with push constants first, right after the counts: +0xa9 is their size in words (OoT's NV12 -> RGBA
+// (hookshot) with push constants first, right after the counts: +0xa9 is their size in words (OoT's NV12 -> RGBA
 // shader: 15, reading 0x10..0x4b; its upscaler's last pass: 21), the area rounded to 16 bytes; +0xba is the whole
 // bank's size (0x10 + push area + the tables), which this matches for every program OoT dispatches.
 struct CsLayout {
@@ -85,7 +92,7 @@ CsLayout cs_layout(const NvnState& s) {
         host->gpu_read(s.prog.sd[i].control + 0x56, &st, 2);
         if (magic != 0x98761234 || st != 5) continue;
         l = cs_layout_of(c);
-        static const bool log_cs = getenv("RX_VK_LOG_CS") != nullptr;   // (relink) the control bytes 0xb0..0xbf
+        static const bool log_cs = env_on("RX_VK_LOG_CS");   // (hookshot) the control bytes 0xb0..0xbf
         if (log_cs) {
             char hex[700];
             int k = 0;
@@ -113,7 +120,7 @@ uint32_t compute_ssbo_table(const NvnState& s, uint32_t* count, uint32_t* layout
     return l.ssbo_at();
 }
 
-/// (relink, #940) For the seed's compute programs (vk_shader.cpp seed_compute), whether c0+offset holds a buffer's address in play:
+/// (hookshot, #940) For the seed's compute programs (vk_shader.cpp seed_compute), whether c0+offset holds a buffer's address in play:
 /// the address word of an entry of the uniform or storage buffer table its control section lays out. Nothing is bound before the
 /// game, so the storage buffer pass's port (EDEN_NX2_GM_LEGACY=0), which binds an access to a pointer only when that pointer is
 /// mapped (Env::IsCbufStorageBufferPointer), found none and left every access to the run-time search, under the key play then used
@@ -129,9 +136,10 @@ const void* descriptor_ok(const void* p, size_t n) {
     if (!p) return nullptr;
     const uintptr_t q = (uintptr_t)p, base = (uintptr_t)host->guest_base();
     if (q >= base && q + n <= base + host->guest_size()) return p;
-    uint64_t avail = 0;
-    if (const uint8_t* h = host->gpu_ptr((uint64_t)q, &avail); h && avail >= n) return h;
-    // (the host's own copies: registrations made before the renderer started, kept by host/rx_backend.c)
+    // (the host's own copies: registrations made before the renderer started, kept by host/rx_backend.c. A registration's
+    // pointer is a host pointer, never a GPU address: asked as one (host->gpu_ptr), a heap address between 16 MB and 512 GB,
+    // as Windows gives them, named guest memory, and the registration was copied from there, all zero: the game's sampler
+    // 258 filtered nearest and texture slot 0x102 had no image, issue 1117's blocky halos)
     MEMORY_BASIC_INFORMATION mi{};
     if (VirtualQuery(p, &mi, sizeof mi) == sizeof mi && mi.State == MEM_COMMIT &&
         (mi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY)) && !(mi.Protect & PAGE_GUARD) &&
@@ -180,38 +188,8 @@ void register_texture_copy(int id, const nvn_tex& tex, const nvn_view* v) {
     r.ok = true;
     r.released = false;
     regs_by_serial[t->serial].push_back(id);
-    static const bool prefetch = getenv("RX_VK_PREFETCH") && atoi(getenv("RX_VK_PREFETCH")) > 0;   // (off by default: vk_texture.cpp)
-    if (prefetch) {
-        if (prefetch_seen.size() > (1u << 20)) prefetch_seen.clear();
-        if (prefetch_seen.insert(t->serial).second && prefetch_q.size() < 16384) prefetch_q.push_back(*t);
-    }
-    if (first_reg_frame.size() < (1u << 20)) first_reg_frame.try_emplace(t->gpu, texture_frame_no());
     slot_versions[id].fetch_add(1, std::memory_order_acq_rel);
-    reg_gen++;
-}
-// (relink, diagnostic) the frame each texture storage was first registered in (by GPU address): how long before its
-// first draw the game made a texture known, i.e. whether its image could be made ahead (vk_texture.cpp logs it at bursts)
-/// (vk_texture.cpp) the next texture queued for making ahead that the game still has registered, false when none is left
-bool texture_prefetch_pop(nvn_tex* out) {
-    std::lock_guard lk(reg_mu);
-    while (!prefetch_q.empty()) {
-        const nvn_tex t = prefetch_q.front();
-        prefetch_q.pop_front();
-        auto it = regs_by_serial.find(t.serial);
-        if (it == regs_by_serial.end()) continue;
-        bool live = false;
-        for (int id : it->second)
-            if ((size_t)id < tex_regs.size() && tex_regs[id].ok && !tex_regs[id].released && tex_regs[id].t.serial == t.serial) live = true;
-        if (!live) continue;
-        *out = t;
-        return true;
-    }
-    return false;
-}
-uint64_t texture_first_registered(uint64_t gpu) {
-    std::lock_guard lk(reg_mu);
-    auto it = first_reg_frame.find(gpu);
-    return it == first_reg_frame.end() ? ~0ull : it->second;
+    reg_gen++;   // (after the slot's version: the note at reg_gen)
 }
 uint32_t texture_slot_version(int id) {
     return id >= 0 && id < kSlotVersions ? slot_versions[id].load(std::memory_order_acquire) : 0;
@@ -235,9 +213,16 @@ void register_sampler_copy(int id, const nvn_samp_par& par) {
     samp_regs[id].p = *p;
     samp_regs[id].ok = true;
     if (!same) samp_gen.fetch_add(1, std::memory_order_acq_rel);
+    samp_versions[id].fetch_add(1, std::memory_order_acq_rel);   // (hookshot: caches of what an id resolves to check this)
+}
+uint32_t sampler_slot_version(int id) {
+    return id >= 0 && id < kSampVersions ? samp_versions[id].load(std::memory_order_acquire) : 0;
 }
 uint64_t sampler_registrations_generation() {
     return samp_gen.load(std::memory_order_acquire);
+}
+void samplers_changed() {
+    samp_gen.fetch_add(1, std::memory_order_acq_rel);
 }
 void texture_released(uint64_t serial) {
     std::lock_guard lk(reg_mu);
@@ -245,7 +230,7 @@ void texture_released(uint64_t serial) {
     if (it == regs_by_serial.end()) return;
     for (int id : it->second)
         if (id >= 0 && (size_t)id < tex_regs.size()) tex_regs[id].released = true, slot_versions[id].fetch_add(1);
-    reg_gen++;
+    reg_gen++;   // (after the slots' versions: the note at reg_gen)
 }
 bool texture_of(int id, nvn_tex* t, nvn_view* v, bool* has_view) {
     std::lock_guard lk(reg_mu);
@@ -269,7 +254,7 @@ void driver_bank(const NvnState& s, int bank, int stage, uint8_t d[0xA00]) {
     }
 }
 
-// (relink) What task and mesh programs read through pointers: the words of their small storage buffers that are GPU addresses
+// (hookshot) What task and mesh programs read through pointers: the words of their small storage buffers that are GPU addresses
 // outside every binding, gathered into up to three regions of one pool each. c0 from 0x880 (after the mesh table, which nothing else
 // uses) gives them to the programs as a table of storage buffers (translate_program.cpp AddGlobalTables). Without it those reads
 // gave 0: skinned and instanced models lost their bones and collapsed into spikes.
@@ -337,7 +322,8 @@ const PointerEntry* pointer_table(const NvnState& s, int stage) {
     return e;
 }
 
-void driver_bank_fill(const NvnState& s, int bank, int stage, uint8_t* d, uint32_t n) {
+// (the word-by-word fill, the reference of the native writer below: HL_UBO_WRITER=0 runs it alone, HL_UBO_WRITER_CHECK=1 beside it)
+static void driver_bank_fill_ref(const NvnState& s, int bank, int stage, uint8_t* d, uint32_t n) {
     std::memset(d, 0, n);
     if (stage < 0 || stage >= kNvnStages) return;
     auto put = [&](uint32_t off, uint32_t v) {
@@ -357,7 +343,7 @@ void driver_bank_fill(const NvnState& s, int bank, int stage, uint8_t* d, uint32
     if (stage == 5) {
         const CsLayout l = cs_layout(s);
         for (uint32_t i = 0; i < 3; i++) put(4 * i, s.grid[i]);
-        for (uint32_t o = 0; o + 4 <= l.push && 0x10 + o + 4 <= n; o += 4) {   // (relink) the push area
+        for (uint32_t o = 0; o + 4 <= l.push && 0x10 + o + 4 <= n; o += 4) {   // (hookshot) the push area
             uint32_t v = 0;
             if (o + 4 <= s.cs_push_n) std::memcpy(&v, s.cs_push + o, 4);
             put(0x10 + o, v);
@@ -391,7 +377,59 @@ void driver_bank_fill(const NvnState& s, int bank, int stage, uint8_t* d, uint32
     if (stage == 0) put(0x610, std::bit_cast<uint32_t>(2047.9375f));
 }
 
-/// (relink) the bound compute program's texture and image slot counts (its control section's)
+// (Hookshot, HL_UBO_WRITER=1, default off) the banks of a graphics stage (c2; c0 of the stages with a storage buffer table and no pointer
+// table) written by bank_write.h in one pass. Compute (stage 5), task and mesh (6, 7: the pointer table) and stages without a table
+// stay on the word-by-word fill. HL_UBO_WRITER_CHECK=1 (implies the switch): both run, the bytes are compared, the calls compared
+// and the mismatches counted (the first ones logged, a line every 10 s)
+namespace {
+bool ubo_writer_handles(int bank, int stage) {
+    if (stage < 0 || stage >= kNvnStages) return false;
+    if (bank == 2) return true;
+    return bank == 0 && stage != 5 && stage != 6 && stage != 7;
+}
+void ubo_writer_fill(const NvnState& s, int bank, int stage, uint8_t* d, uint32_t n) {
+    if (bank == 2) return bankw::write_c2(s.tex[stage], s.samp[stage], s.img[stage], d, n);
+    static constexpr uint32_t kTable[kNvnStages] = {0x110, 0x510, 0x410, 0x210, 0x310, 0, 0x670, 0x770};
+    if (!kTable[stage]) return std::memset(d, 0, n), void();
+    bankw::write_c0(s.ssbo[stage], kTable[stage], stage == 0, d, n);
+}
+}  // namespace
+
+void driver_bank_fill(const NvnState& s, int bank, int stage, uint8_t* d, uint32_t n) {
+    static const bool check = env_on("HL_UBO_WRITER_CHECK");
+    static const bool on = check || env_on("HL_UBO_WRITER");
+    if (!on || !ubo_writer_handles(bank, stage)) {
+        driver_bank_fill_ref(s, bank, stage, d, n);
+        return;
+    }
+    static std::atomic<bool> announced{false};
+    if (!announced.exchange(true))
+        logf("hl ubo writer: the graphics stages' driver banks written natively%s (HL_UBO_WRITER=1)",
+             check ? ", checked against the word path (HL_UBO_WRITER_CHECK=1)" : "");
+    ubo_writer_fill(s, bank, stage, d, n);
+    if (!check) return;
+    static std::atomic<uint64_t> compared{0}, bad{0}, bytes{0}, last_log{0};
+    thread_local std::vector<uint8_t> ref;
+    ref.resize(n);
+    driver_bank_fill_ref(s, bank, stage, ref.data(), n);
+    compared++, bytes += n;
+    if (std::memcmp(ref.data(), d, n)) {
+        if (bad++ < 12) {
+            uint32_t at = 0;
+            while (ref[at] == d[at]) at++;
+            logf("hl ubo writer check: MISMATCH bank c%d stage %d n %u first at %#x: word path %#x, native %#x", bank, stage, n, at,
+                 *(const uint32_t*)(ref.data() + (at & ~3u)), *(const uint32_t*)(d + (at & ~3u)));
+        }
+    }
+    const uint64_t now = GetTickCount64();
+    uint64_t prev = last_log.load();
+    if (prev == 0) last_log.compare_exchange_strong(prev, now);
+    else if (now - prev >= 10000 && last_log.compare_exchange_strong(prev, now))
+        logf("hl ubo writer check: %llu bank fills compared (%llu bytes), %llu mismatches", (unsigned long long)compared.load(),
+             (unsigned long long)bytes.load(), (unsigned long long)bad.load());
+}
+
+/// (hookshot) the bound compute program's texture and image slot counts (its control section's)
 void cs_slot_counts(const NvnState& s, uint32_t* tex, uint32_t* img) {
     const CsLayout l = cs_layout(s);
     *tex = l.tex, *img = l.img;
@@ -416,7 +454,7 @@ uint32_t driver_bank_word(const NvnState& s, int bank, int stage, uint32_t offse
         auto entry = [&](const nvn_p_bind_buf& e, uint32_t in) -> uint32_t {
             return in == 0 ? lo(e.addr) : in == 4 ? hi(e.addr) : in == 8 ? (uint32_t)e.size : 0;
         };
-        if (offset < l.ubo_at()) {   // (relink) the push area
+        if (offset < l.ubo_at()) {   // (hookshot) the push area
             uint32_t v = 0;
             if (offset - 0x10 + 4 <= s.cs_push_n) std::memcpy(&v, s.cs_push + (offset - 0x10), 4);
             return v;

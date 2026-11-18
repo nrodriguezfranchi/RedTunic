@@ -1,10 +1,10 @@
-"""Which ReLink a build is: the release it came from and a fingerprint of its sources.
+"""Which Hookshot a build is: the release it came from and a fingerprint of its sources.
 
-The game prints it as the first line of relink_log.txt and in the Insert menu, so a report says what was run.
+The game prints it as the first line of hookshot_log.txt and in the Insert menu, so a report says what was run.
 
     python -I nx2/version.py            prints it for this folder
 
-The release name comes from, in order: RELINK_VERSION; a VERSION file at the root (written when a release is packaged,
+The release name comes from, in order: HOOKSHOT_VERSION; a VERSION file at the root (written when a release is packaged,
 since the builder's tools folder has no git history); `git describe --tags --always --dirty` in a checkout, matching
 only version tags (`v0.1.0`, not the branch-like tags from before the scheme). The
 fingerprint is a hash of the sources in this folder (host/, gpu/, nx2/), line endings aside: every build from the
@@ -22,7 +22,7 @@ SOURCE_EXT = (".c", ".cc", ".cpp", ".h", ".hpp", ".inc", ".py", ".glsl", ".comp"
 
 
 def release(root=ROOT):
-    name = os.environ.get("RELINK_VERSION", "").strip()
+    name = os.environ.get("HOOKSHOT_VERSION", "").strip()
     if not name:
         for file in ("VERSION", "version.txt"):   # (version.txt: the release's tag, written into the builder's tools when it is packed)
             try:
@@ -42,8 +42,30 @@ def release(root=ROOT):
     return name or "unknown"
 
 
+def long_path(p):
+    """(Windows) p as an extended-length path (\\\\?\\...): a builder unpacked in a deep folder has sources past 260
+    characters (a portable launcher in Downloads), which a plain path can't open and a plain walk doesn't list.
+    Python takes these without Windows' long-paths setting. Elsewhere, or one already: as is (nup.py's)"""
+    if os.name != "nt" or not p:
+        return p
+    p = os.path.abspath(p)
+    if p.startswith("\\\\?\\"):
+        return p
+    return "\\\\?\\UNC\\" + p[2:] if p.startswith("\\\\") else "\\\\?\\" + p
+
+
+def walk(top):
+    """os.walk(top), folders past 260 characters included, each folder given back in top's own form (not \\\\?\\...): the
+    paths go on to command lines and into keys as before. (A plain walk leaves such a folder out without a word.)"""
+    long_top = long_path(top)
+    for d, dirs, files in os.walk(long_top):
+        rel = d[len(long_top):].lstrip("\\/")
+        yield (os.path.join(top, rel) if rel else top), dirs, files   # (as os.walk joins them: top's own spelling kept)
+
+
 def fingerprint(root=ROOT):
-    h = hashlib.sha1()
+    h = hashlib.sha1(usedforsecurity=False)
+    root = long_path(root)   # (walked, opened and made relative as one long path, so the names hashed are as before)
     for top in SOURCES:
         base = os.path.join(root, top)
         for d, dirs, files in os.walk(base):
@@ -65,7 +87,7 @@ def describe(root=ROOT):
 
 
 def define(root=ROOT):
-    return '-DRELINK_VERSION="%s"' % describe(root)
+    return '-DHOOKSHOT_VERSION="%s"' % describe(root)
 
 
 if __name__ == "__main__":

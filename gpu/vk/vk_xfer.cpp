@@ -10,32 +10,13 @@
 #include "vk_draw.h"   // (end_pass: a pass cannot stay open across a transfer)
 #include "vk_texture.h"
 #include "vk_gprof.h"
-#include "prompt_tex.h"
+#ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
+#include "hookshot_env.h"
+#endif
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
 namespace {
-
-/// (relink) A copy of a whole buffer into a texture of the HUD cross letters' shape (prompt_tex.h) whose bytes, as the CPU
-/// sees them, are one of the game's four letters: true when it is, so that the copy goes the CPU's way and the upload that
-/// follows takes ReLink's mask
-bool keytex_copy(const nvn_p_copy_bt& p, int64_t copy_stride) {
-    const nvn_view* v = p.has_view ? &p.view : nullptr;
-    const nvn_texdesc& d = p.tex->d;
-    if (vk_format(view_nvn_format(p.tex, v)).format != VK_FORMAT_BC4_UNORM_BLOCK || d.target != NVN_TEXTURE_TARGET_2D ||
-        d.width != prompt_tex::kSize || d.height != prompt_tex::kSize || d.levels > 1 || view_level(v) || view_layer(v) ||
-        p.r.xoffset || p.r.yoffset || p.r.zoffset || p.r.width != (int)prompt_tex::kSize || p.r.height != (int)prompt_tex::kSize ||
-        p.r.depth > 1)
-        return false;
-    constexpr uint64_t row = prompt_tex::kSize / 4 * 8, rows = prompt_tex::kSize / 4;   // (BC4: 8 bytes a 4 x 4 block)
-    const uint64_t stride = copy_stride > 0 ? (uint64_t)copy_stride : row;
-    uint64_t avail = 0;
-    const uint8_t* src = host->gpu_ptr(p.buf, &avail);
-    if (!src || stride < row || avail < stride * (rows - 1) + row) return false;
-    uint8_t blocks[prompt_tex::kBlocks];
-    for (uint64_t y = 0; y < rows; y++) std::memcpy(blocks + y * row, src + y * stride, row);
-    return prompt_tex_recognised(blocks);
-}
 
 /// One side of a copy: the texture's level, layers (or 3D slices), and the region of it in texels
 struct Sub {
@@ -50,6 +31,24 @@ struct Sub {
     uint32_t down = 0;   // (a level the image left out, copied into its first at 1 / 2^down the size)
 };
 
+/// A format's optimal-tiling features, asked of the driver once per format (a scaled copy checks both of its sides)
+VkFormatFeatureFlags tiling_features(VkFormat f) {
+    static std::atomic<uint64_t> known[256];   // (the core formats; bit 63: asked already)
+    if ((uint32_t)f >= 256) {
+        VkFormatProperties p{};
+        vkGetPhysicalDeviceFormatProperties(dev.physical, f, &p);
+        return p.optimalTilingFeatures;
+    }
+    uint64_t v = known[f].load(std::memory_order_relaxed);
+    if (!(v >> 63)) {
+        VkFormatProperties p{};
+        vkGetPhysicalDeviceFormatProperties(dev.physical, f, &p);
+        v = 1ull << 63 | p.optimalTilingFeatures;
+        known[f].store(v, std::memory_order_relaxed);
+    }
+    return (VkFormatFeatureFlags)v;
+}
+
 int warn_budget[16];
 void warn(int key, const char* what) {
     if (warn_budget[key]++ < 3) logf("vk: %s", what);
@@ -58,7 +57,7 @@ void warn(int key, const char* what) {
 /// (RX_VK_LOG_BIG_COPY=1: copies into textures of 32 MB or more, the course maps' kind, 300 lines)
 void log_big_copy(const char* kind, const Texture* t, uint32_t level, uint32_t layer, int x, int y, uint32_t w, uint32_t h,
                   uint64_t src) {
-    static const bool on = getenv("RX_VK_LOG_BIG_COPY") != nullptr;
+    static const bool on = env_on("RX_VK_LOG_BIG_COPY");
     static const std::pair<uint64_t, uint64_t> range = [] {   // (RX_VK_WATCH_RANGE=<lo>:<hi>: copies into textures there)
         unsigned long long a = 0, b = 0;
         if (const char* e = getenv("RX_VK_WATCH_RANGE")) sscanf(e, "%llx:%llx", &a, &b);
@@ -75,23 +74,11 @@ void log_big_copy(const char* kind, const Texture* t, uint32_t level, uint32_t l
          (unsigned long long)src, t->gpu_written ? " (rendered)" : "", t->released ? " (finalized)" : "");
 }
 
-/// (dst: the texture the copy or the clear writes)
-bool resolve(const nvn_tex* t, const nvn_view* v, bool has_v, const NVNcopyRegion& r_in, Sub& s, bool scaled_ok = false,
-             bool dst = false) {
+bool resolve(const nvn_tex* t, const nvn_view* v, bool has_v, const NVNcopyRegion& r_in, Sub& s, bool scaled_ok = false) {
     NVNcopyRegion r = r_in;
     if (!t || !t->gpu) return false;
     const nvn_view* view = has_v ? v : nullptr;
-    if (dst) {
-        // (relink, 12/11) a destination the GPU drew and the game finalized is not uploaded over from the game's memory
-        // first (vk_texture.cpp texture_touch): a copy or a clear of part of it kept the rest as that memory had it. One the
-        // CPU filled is uploaded as before: a copy into part of it needs the rest
-        Texture* w = texture_get(t, false);
-        texture_write_targets(&w, w ? 1 : 0, nullptr);
-        s.tex = texture_get(t, true);
-        texture_write_targets(nullptr, 0, nullptr);
-    } else {
-        s.tex = texture_get(t, true);
-    }
+    s.tex = texture_get(t, true);
     if (!s.tex) {
         warn(0, "copy of a texture with no image: skipped");
         return false;
@@ -115,7 +102,7 @@ bool resolve(const nvn_tex* t, const nvn_view* v, bool has_v, const NVNcopyRegio
                  s.tex->astc ? " ASTC" : "", s.tex->skip);
         return false;
     }
-    if (!s.down && view_level(view) >= s.tex->skip + s.tex->levels) {   // (relink-amd: a level the image left out at its end)
+    if (!s.down && view_level(view) >= s.tex->skip + s.tex->levels) {   // (hookshot-amd: a level the image left out at its end)
         static int logged;
         if (logged++ < 20)
             logf("vk: copy with level %u of texture %#llx %ux%u, %u levels (its last levels left out): skipped",
@@ -130,14 +117,15 @@ bool resolve(const nvn_tex* t, const nvn_view* v, bool has_v, const NVNcopyRegio
     s.x = r.xoffset, s.y = r.yoffset;
     s.w = r.width > 0 ? (uint32_t)r.width : (s.x >= 0 && (uint32_t)s.x < lw ? lw - (uint32_t)s.x : 0);
     s.h = r.height > 0 ? (uint32_t)r.height : (s.y >= 0 && (uint32_t)s.y < lh ? lh - (uint32_t)s.y : 0);
-    const uint32_t first = view_layer(view) + (uint32_t)std::max(0, r.zoffset);
+    // (hookshot: 64-bit, so a layer range near 2^32 does not wrap around past the clamp below)
+    const uint64_t first = (uint64_t)view_layer(view) + (uint64_t)std::max(0, r.zoffset);
     const uint32_t count = (uint32_t)std::max(1, r.depth);
     if (s.tex->type == VK_IMAGE_TYPE_3D) {
         s.z = (int32_t)std::max(0, r.zoffset), s.d = std::min(count, ld - std::min<uint32_t>(ld, (uint32_t)s.z));
         s.layer = 0, s.layers = 1;
     } else {
-        s.layer = first, s.layers = count;
-        if (s.layer + s.layers > s.tex->layers) s.layers = s.tex->layers > s.layer ? s.tex->layers - s.layer : 0;
+        s.layer = first < s.tex->layers ? (uint32_t)first : 0;
+        s.layers = first < s.tex->layers ? (uint32_t)std::min<uint64_t>(count, s.tex->layers - first) : 0;
     }
     s.w = std::min<uint32_t>(s.w, lw > (uint32_t)std::max(0, s.x) ? lw - (uint32_t)std::max(0, s.x) : 0);
     s.h = std::min<uint32_t>(s.h, lh > (uint32_t)std::max(0, s.y) ? lh - (uint32_t)std::max(0, s.y) : 0);
@@ -166,11 +154,18 @@ bool buffer_side(const NvnState& st, const Sub& s, uint64_t addr, uint64_t& size
     const uint32_t wb = (s.w + (uint32_t)s.bw - 1) / (uint32_t)s.bw;
     const uint32_t hb = (s.h + (uint32_t)s.bh - 1) / (uint32_t)s.bh;
     const uint64_t row = st.copy_stride > 0 ? (uint64_t)st.copy_stride : (uint64_t)wb * s.bpb;
-    if (row % s.bpb || row < (uint64_t)wb * s.bpb) {
+    if (row % s.bpb || row < (uint64_t)wb * s.bpb || row / s.bpb * (uint64_t)s.bw > UINT32_MAX) {
         warn(3, "copy row stride does not fit the level's blocks: skipped");
         return false;
     }
-    size = row * hb * s.layers * s.d;
+    // The last row ends at its last block: its trailing stride padding is not accessed by Vulkan.
+    // (hookshot: overflow-checked; the stride is the game's 64-bit value, and a wrapped size checked one row of many)
+    uint64_t rows = 0, body = 0;
+    if (__builtin_mul_overflow((uint64_t)hb * s.layers, (uint64_t)s.d, &rows) || __builtin_mul_overflow(row, rows - 1, &body) ||
+        __builtin_add_overflow(body, (uint64_t)wb * s.bpb, &size)) {
+        warn(3, "copy buffer size overflows: skipped");
+        return false;
+    }
     span = gpu_buffer_bind(addr, size, written);
     if (!addr || !span) {
         warn(3, "copy buffer is not one mapped pool span: skipped");
@@ -190,22 +185,43 @@ bool size_compatible(const Sub& a, const Sub& b) {
     return a.bpb == b.bpb && a.bw == b.bw && a.bh == b.bh;
 }
 
+/// 0: float or normalized, 1: unsigned integer, 2: signed integer (a blit may not mix them)
+int format_class(VkFormat f) {
+    switch (f) {
+    case VK_FORMAT_R8_UINT: case VK_FORMAT_R8G8_UINT: case VK_FORMAT_R8G8B8_UINT: case VK_FORMAT_R8G8B8A8_UINT:
+    case VK_FORMAT_B8G8R8A8_UINT: case VK_FORMAT_A2B10G10R10_UINT_PACK32: case VK_FORMAT_A2R10G10B10_UINT_PACK32:
+    case VK_FORMAT_R16_UINT: case VK_FORMAT_R16G16_UINT: case VK_FORMAT_R16G16B16A16_UINT: case VK_FORMAT_R32_UINT:
+    case VK_FORMAT_R32G32_UINT: case VK_FORMAT_R32G32B32_UINT: case VK_FORMAT_R32G32B32A32_UINT: case VK_FORMAT_S8_UINT:
+    case VK_FORMAT_A8B8G8R8_UINT_PACK32: case VK_FORMAT_R16G16B16_UINT: case VK_FORMAT_B8G8R8_UINT:
+    case VK_FORMAT_R64_UINT: case VK_FORMAT_R64G64_UINT: case VK_FORMAT_R64G64B64_UINT: case VK_FORMAT_R64G64B64A64_UINT:
+        return 1;
+    case VK_FORMAT_R8_SINT: case VK_FORMAT_R8G8_SINT: case VK_FORMAT_R8G8B8_SINT: case VK_FORMAT_R8G8B8A8_SINT:
+    case VK_FORMAT_B8G8R8A8_SINT: case VK_FORMAT_A2B10G10R10_SINT_PACK32: case VK_FORMAT_R16_SINT:
+    case VK_FORMAT_R16G16_SINT: case VK_FORMAT_R16G16B16A16_SINT: case VK_FORMAT_R32_SINT: case VK_FORMAT_R32G32_SINT:
+    case VK_FORMAT_R32G32B32_SINT: case VK_FORMAT_R32G32B32A32_SINT: case VK_FORMAT_A8B8G8R8_SINT_PACK32:
+    case VK_FORMAT_A2R10G10B10_SINT_PACK32: case VK_FORMAT_R16G16B16_SINT: case VK_FORMAT_B8G8R8_SINT:
+    case VK_FORMAT_R64_SINT: case VK_FORMAT_R64G64_SINT: case VK_FORMAT_R64G64B64_SINT: case VK_FORMAT_R64G64B64A64_SINT:
+        return 2;
+    default:
+        return 0;
+    }
+}
+
 } // namespace
 
 void copy_b2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_bt& p, bool to_image) {
     // (ASTC blocks into a decoded image: into the texture's storage on the CPU, which uploads it again. Other formats are
     // copied on the GPU: the buffer may hold what the GPU wrote this submission (not yet in guest memory), and the image
-    // it fills is kept (texture_frame: a texture the GPU filled once is not evicted). RX_VK_B2T_CPU=1: on the CPU too)
-    static const bool b2t_gpu = getenv("RX_VK_B2T_CPU") == nullptr;
+    // it fills is kept (texture_frame: a texture the GPU filled once is not evicted))
     const bool astc = to_image && p.tex && vk_format(view_nvn_format(p.tex, p.has_view ? &p.view : nullptr)).astc;
     if (to_image && p.tex) {   // (RX_VK_LOG_BIG_COPY)
         if (Texture* t = texture_get(p.tex, false))
-            log_big_copy(b2t_gpu && !astc ? "buffer (GPU)" : "buffer (CPU)", t, view_level(p.has_view ? &p.view : nullptr),
+            log_big_copy(!astc ? "buffer (GPU)" : "buffer (CPU)", t, view_level(p.has_view ? &p.view : nullptr),
                          view_layer(p.has_view ? &p.view : nullptr) + (uint32_t)std::max(0, p.r.zoffset), p.r.xoffset,
                          p.r.yoffset, (uint32_t)std::max(0, p.r.width), (uint32_t)std::max(0, p.r.height), p.buf);
     }
-    {   // (relink, RX_VK_LOG_B2T=1) the first 60 copies into textures 960 wide or more: where they read, and what
-        static const bool on = getenv("RX_VK_LOG_B2T") != nullptr;
+    {   // (hookshot, RX_VK_LOG_B2T=1) the first 60 copies into textures 960 wide or more: where they read, and what
+        static const bool on = env_on("RX_VK_LOG_B2T");
         static std::atomic<int> n{0};
         if (on && to_image && p.tex && p.r.width >= 960 && n.fetch_add(1) < 60) {
             uint64_t avail = 0, sum = 0, cnt = 0;
@@ -218,19 +234,23 @@ void copy_b2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_bt& p, bool to
                  p.r.yoffset, st.copy_stride);
         }
     }
-    if (to_image && p.tex && (!b2t_gpu || astc || keytex_copy(p, st.copy_stride))) {
+    if (astc) {
         uint64_t avail = 0;
         const uint8_t* src = host->gpu_ptr(p.buf, &avail);
+        if (src && !texels_fit(p.tex, &p.r, st.copy_stride > 0 ? (uint64_t)st.copy_stride : 0, avail)) {
+            warn(3, "copy buffer runs past its mapping: skipped");
+            return;
+        }
         if (src) {
             const nvn_view* v = p.has_view ? &p.view : nullptr;
             texture_read_texels(p.tex, view_level(v), view_layer(v), &p.r, const_cast<uint8_t*>(src),
                                 st.copy_stride > 0 ? (uint64_t)st.copy_stride : 0, 0, true);
             return;
         }
-        if (astc) return;   // (others without CPU access to the buffer: on the GPU, below)
+        return;   // (no CPU access to the buffer: nothing to decode from)
     }
     Sub s;
-    if (!resolve(p.tex, &p.view, p.has_view != 0, p.r, s, false, to_image)) return;
+    if (!resolve(p.tex, &p.view, p.has_view != 0, p.r, s)) return;
     uint64_t size = 0;
     VkBufferImageCopy c{};
     BufferRef span;
@@ -243,17 +263,13 @@ void copy_b2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_bt& p, bool to
         warn(5, "copy of a buffer into a depth-stencil texture: skipped");
         return;
     }
-    if (pass_trace_on())   // (relink, diagnostic)
-        trace_line("copy %s #%u %#llx %ux%u f%#x%s, buffer %#llx (guest %#llx), %llu bytes", to_image ? "b2t" : "t2b", s.tex->id,
-                   (unsigned long long)s.tex->gpu, s.tex->width, s.tex->height, s.tex->nvn_format, s.tex->released ? " (finalized)" : "",
-                   (unsigned long long)p.buf, (unsigned long long)host->gpu_guest(p.buf), (unsigned long long)size);
     end_pass(cmd);
     GprofSpan gp(cmd, to_image ? "xfer copy buffer->texture (with its barriers)" : "xfer copy texture->buffer (with its barriers)");
     gp.bytes = size;
     full_barrier(cmd);
     if (to_image) {
         vkCmdCopyBufferToImage(cmd, span.buffer, s.tex->image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
-        texture_written(s.tex);
+        texture_written(s.tex, "a buffer-to-texture copy");
     } else {
         vkCmdCopyImageToBuffer(cmd, s.tex->image, VK_IMAGE_LAYOUT_GENERAL, span.buffer, 1, &c);
         const uint64_t guest = host->gpu_guest(p.buf);
@@ -266,9 +282,9 @@ void copy_b2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_bt& p, bool to
 void copy_t2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_tt& p) {
     Sub s, d;
     if (!resolve(p.src, &p.sv, p.has_sv != 0, p.sr, s, true)) return;
-    if (!resolve(p.dst, &p.dv, p.has_dv != 0, p.dr, d, true, true)) return;
+    if (!resolve(p.dst, &p.dv, p.has_dv != 0, p.dr, d, true)) return;
     {   // (RX_VK_LOG_COPY: the texture copies, 400 of them)
-        static const bool log_copy = getenv("RX_VK_LOG_COPY") != nullptr;
+        static const bool log_copy = env_on("RX_VK_LOG_COPY");
         static int logged;
         if (log_copy && logged++ < 400)
             logf("vk: copy #%u %#llx %ux%u NVN %#x%s level %u (%d,%d %ux%u) -> #%u %#llx %ux%u NVN %#x level %u (%d,%d "
@@ -278,10 +294,6 @@ void copy_t2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_tt& p) {
                  d.w, d.h, p.flags);
     }
     log_big_copy("texture", d.tex, d.level, d.layer, d.x, d.y, d.w, d.h, s.tex->gpu);
-    if (pass_trace_on())   // (relink, diagnostic: the copies in the frame's pass trace)
-        trace_line("copy t2t #%u %#llx %ux%u f%#x%s -> #%u %#llx %ux%u f%#x%s", s.tex->id, (unsigned long long)s.tex->gpu,
-                   s.tex->width, s.tex->height, s.tex->nvn_format, s.tex->released ? " (finalized)" : "", d.tex->id,
-                   (unsigned long long)d.tex->gpu, d.tex->width, d.tex->height, d.tex->nvn_format, d.tex->released ? " (finalized)" : "");
     if (s.tex == d.tex && s.level == d.level && s.layer == d.layer) {
         warn(6, "texture copy within one subresource: skipped");
         return;
@@ -296,12 +308,13 @@ void copy_t2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_tt& p) {
     GprofSpan gp(cmd, "xfer copy texture->texture (with its barriers)");
     full_barrier(cmd);
     const bool same_size = s.w == d.w && s.h == d.h && s.d == d.d;
-    if (s.tex->bc != d.tex->bc || (s.tex->bc && !same_size)) {   // (big ASTC kept as BC3 on one side: vk_texture.cpp)
+    // (decoded ASTC kept as BC on one side, or as two BC formats (BC1 and BC7 copy no blocks into each other))
+    if (s.tex->bc != d.tex->bc || (s.tex->bc && (!same_size || s.tex->format != d.tex->format))) {
         bool done = false;
         if (d.tex->bc && same_size) {
             done = texture_copy_into_bc(cmd, s.tex, s.level, s.layer, s.x, s.y, d.tex, d.level, d.layer, d.x, d.y, s.w, s.h,
                                         s.layers);
-        } else if (s.tex->bc && !d.tex->bc && s.tex->bc_resized) {   // (relink-amd: its texels are not the game's)
+        } else if (s.tex->bc && !d.tex->bc && s.tex->bc_resized) {   // (hookshot-amd: its texels are not the game's)
             static int logged;
             if (logged++ < 8)
                 logf("vk: a copy out of resized BC3 texture %#llx left out", (unsigned long long)s.tex->gpu);
@@ -323,7 +336,7 @@ void copy_t2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_tt& p) {
         }
         if (!done) warn(10, "texture copy into or out of a BC3-kept ASTC texture it cannot make: skipped");
         full_barrier(cmd);
-        if (done) texture_written(d.tex);
+        if (done) texture_written(d.tex, "a copy into a BC texture");
         return;
     }
     if (s.tex->samples != VK_SAMPLE_COUNT_1_BIT && d.tex->samples == VK_SAMPLE_COUNT_1_BIT && same_size) {
@@ -333,6 +346,18 @@ void copy_t2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_tt& p) {
         VkImageCopy cp{layers(s), offset(s), layers(d), offset(d), extent(s)};
         vkCmdCopyImage(cmd, s.tex->image, VK_IMAGE_LAYOUT_GENERAL, d.tex->image, VK_IMAGE_LAYOUT_GENERAL, 1, &cp);
     } else {   // scaled or converting: nearest, or linear when the game asked for it (colour only)
+        // (what Vulkan allows a blit: BLIT_SRC/BLIT_DST, one format class on both sides, the same format for depth or
+        // stencil, single-sampled images, and linear filtering only where the source format supports it; outside that
+        // the result is undefined, and some drivers write garbage or lose the device)
+        if (!(tiling_features(s.tex->format) & VK_FORMAT_FEATURE_BLIT_SRC_BIT) ||
+            !(tiling_features(d.tex->format) & VK_FORMAT_FEATURE_BLIT_DST_BIT) ||
+            format_class(s.tex->format) != format_class(d.tex->format) ||
+            (!color && s.tex->format != d.tex->format) ||
+            s.tex->samples != VK_SAMPLE_COUNT_1_BIT || d.tex->samples != VK_SAMPLE_COUNT_1_BIT) {
+            warn(13, "texture blit the device cannot make: skipped");
+            full_barrier(cmd);
+            return;
+        }
         VkImageBlit bl{};
         bl.srcSubresource = layers(s);
         bl.dstSubresource = layers(d);
@@ -340,27 +365,34 @@ void copy_t2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_tt& p) {
         bl.srcOffsets[1] = {s.x + (int32_t)s.w, s.y + (int32_t)s.h, s.z + (int32_t)s.d};
         bl.dstOffsets[0] = offset(d);
         bl.dstOffsets[1] = {d.x + (int32_t)d.w, d.y + (int32_t)d.h, d.z + (int32_t)d.d};
-        const bool linear = ((p.flags & NVN_COPY_FLAGS_LINEAR_FILTER_BIT) || d.down > s.down) && color;
+        const bool linear = ((p.flags & NVN_COPY_FLAGS_LINEAR_FILTER_BIT) || d.down > s.down) && color &&
+                            (tiling_features(s.tex->format) & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) &&
+                            format_class(s.tex->format) == 0;
         vkCmdBlitImage(cmd, s.tex->image, VK_IMAGE_LAYOUT_GENERAL, d.tex->image, VK_IMAGE_LAYOUT_GENERAL, 1, &bl,
                        linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
     }
     full_barrier(cmd);
-    texture_written(d.tex);
+    texture_written(d.tex, "a texture-to-texture copy");
 }
 
 void clear_tex(VkCommandBuffer cmd, NvnState& st, const nvn_p_clear_tex& p) {
     Sub s;
-    if (!resolve(p.tex, &p.view, p.has_view != 0, p.r, s, false, true)) return;
+    if (!resolve(p.tex, &p.view, p.has_view != 0, p.r, s)) return;
     const uint32_t lw = std::max(1u, s.tex->width >> s.level), lh = std::max(1u, s.tex->height >> s.level);
     const bool whole = !s.x && !s.y && s.w == lw && s.h == lh;
     if ((p.mask & 0xf) != 0xf && (s.tex->aspect & VK_IMAGE_ASPECT_COLOR_BIT)) warn(8, "texture clear with a channel mask: cleared whole");
-    if (pass_trace_on())   // (relink, diagnostic)
-        trace_line("clear tex #%u %#llx %ux%u f%#x%s", s.tex->id, (unsigned long long)s.tex->gpu, s.tex->width, s.tex->height,
-                   s.tex->nvn_format, s.tex->released ? " (finalized)" : "");
     end_pass(cmd);
     GprofSpan gp(cmd, "xfer clear texture (with its barriers)");
     full_barrier(cmd);
-    if (whole && s.tex->type != VK_IMAGE_TYPE_3D) {
+    // (an image kept in ASTC blocks: vkCmdClearColorImage does not take a compressed format, and the region path below only
+    // works in BC blocks; a colour written over ASTC blocks would be garbage, so the image is left as it is)
+    if (s.tex->format >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && s.tex->format <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK) {
+        warn(14, "clear of an ASTC texture: skipped");
+        return;
+    }
+    const bool volume = s.tex->type == VK_IMAGE_TYPE_3D;
+    const bool raw = s.tex->format >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && s.tex->format <= VK_FORMAT_BC7_SRGB_BLOCK;
+    if (whole && !volume && !raw) {
         VkImageSubresourceRange rng{s.tex->aspect, s.level, 1, s.layer, s.layers};
         if (s.tex->aspect & VK_IMAGE_ASPECT_COLOR_BIT) {
             VkClearColorValue cv{};
@@ -374,23 +406,29 @@ void clear_tex(VkCommandBuffer cmd, NvnState& st, const nvn_p_clear_tex& p) {
         }
     } else {   // (a region: a pass over that level and layer, and vkCmdClearAttachments)
         const nvn_view* v = p.has_view ? &p.view : nullptr;
-        for (uint32_t k = 0; k < s.layers; k++) {
+        const uint32_t slices = volume ? s.d : s.layers;
+        for (uint32_t k = 0; k < slices; k++) {
+            const uint32_t slice = (volume ? (uint32_t)s.z : s.layer) + k;
             nvn_view lv = v ? *v : nvn_view{};
             // texture_view takes a guest mip level and subtracts skip itself.
             lv.set_levels = 1, lv.base_level = (uint8_t)(s.level + s.tex->skip), lv.nlevels = 1;
-            lv.set_layers = 1, lv.min_layer = (uint16_t)(s.layer + k), lv.nlayers = 1;
-            const VkImageView view = texture_view(s.tex, p.tex, &lv, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Attachment);
-            if (!view) continue;
-            // (an attachment view of a compressed image is a raw one, one texel a block: its area and the
-            // rect in blocks, as targets() sizes a pass over it)
-            const bool raw = s.tex->format >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && s.tex->format <= VK_FORMAT_BC7_SRGB_BLOCK;
+            lv.set_layers = 1, lv.min_layer = (uint16_t)slice, lv.nlayers = 1;
+            const TextureAttachment attachment = texture_attachment(s.tex, p.tex, &lv);
+            if (!attachment.view) continue;
+            // (an attachment view of a compressed image is a raw one, one texel a block: its area and the rect in blocks, as
+            // targets() sizes a pass over it)
             const uint32_t aw = raw ? (lw + 3) / 4 : lw, ah = raw ? (lh + 3) / 4 : lh;
             const int32_t rx = raw ? s.x / 4 : s.x, ry = raw ? s.y / 4 : s.y;
             const uint32_t rw = std::min<uint32_t>(raw ? (s.x + s.w + 3) / 4 - rx : s.w, aw - std::min<uint32_t>(aw, (uint32_t)rx));
             const uint32_t rh = std::min<uint32_t>(raw ? (s.y + s.h + 3) / 4 - ry : s.h, ah - std::min<uint32_t>(ah, (uint32_t)ry));
             if (!rw || !rh) continue;
+            if (attachment.blocks) {
+                full_barrier(cmd);
+                copy_block_attachment(cmd, *s.tex, attachment.blocks, s.level, slice, true);
+                full_barrier(cmd);
+            }
             VkRenderingAttachmentInfo a{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-            a.imageView = view;
+            a.imageView = attachment.view;
             a.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             a.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
             a.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -409,12 +447,34 @@ void clear_tex(VkCommandBuffer cmd, NvnState& st, const nvn_p_clear_tex& p) {
             const VkClearRect rect{{{rx, ry}, {rw, rh}}, 0, 1};
             vkCmdClearAttachments(cmd, 1, &ca, 1, &rect);
             vkCmdEndRendering(cmd);
+            if (attachment.blocks) {
+                full_barrier(cmd);
+                copy_block_attachment(cmd, *s.tex, attachment.blocks, s.level, slice, false);
+            }
         }
     }
     full_barrier(cmd);
     const bool fresh = !s.tex->gpu_written || s.tex->released || s.tex->only_cleared;
     texture_written(s.tex);
     s.tex->only_cleared = fresh && s.tex->aspect == VK_IMAGE_ASPECT_COLOR_BIT;
+}
+
+// (hookshot: the one-frame black world in Zora's Domain) In the parallel replay's dry pass, in stream order: the destination
+// of a texture-to-texture copy marked as the GPU's (texture_written), as dry_mark_written does for a draw's targets. Segments
+// record out of order, and a later segment that samples this texture before the copy's own segment has recorded it found it
+// never written and uploaded stale guest memory over it, in an upload that runs after the earlier segment's copy: the 1280 x 720
+// scene targets of the frame, black for one frame ("parallel: ... written in segment N, uploaded by the later segment M" in
+// the log counted them). RX_VK_NO_DRY_XFER_MARKS=1: as before
+void dry_mark_copy_target(const nvn_p_copy_tt& p) {
+    static const bool off = env_on("RX_VK_NO_DRY_XFER_MARKS");
+    if (off || !p.dst || !p.dst->gpu) return;
+    const nvn_view* view = p.has_dv ? &p.dv : nullptr;
+    Texture* tex = texture_get(p.dst, false);
+    if (!tex) return;
+    const uint32_t level = view_level(view);
+    // (the cases copy_t2t's resolve refuses, or scales into the first level: not marked, as it would not write)
+    if (level < tex->skip ? tex->bc || tex->type != VK_IMAGE_TYPE_2D : level >= tex->skip + tex->levels) return;
+    texture_written(tex, "the dry pass (a texture copy's destination)");
 }
 
 } // namespace mkwvk

@@ -1,4 +1,4 @@
-// (relink) F12's picture on the disk: vk_screenshot.h. On Windows the PNG is written by Windows' own encoder (WIC), so the
+// (hookshot) F12's picture on the disk: vk_screenshot.h. On Windows the PNG is written by Windows' own encoder (WIC), so the
 // file is compressed (a 1920x1080 picture is ~2 to 3 MB, where write_png's stored blocks make 6.2 MB) with no library of
 // ours; elsewhere write_png (vk_replay.cpp) writes it uncompressed.
 #include "vk_screenshot.h"
@@ -22,7 +22,10 @@ void logf(const char* fmt, ...);
 std::string screenshot_path(const std::string& folder) {
     if (folder.empty()) return "";
 #ifdef _WIN32
-    _mkdir(folder.c_str());
+    {   // (the game folder's path is UTF-8: the folder made by its wide name)
+        wchar_t wf[MAX_PATH * 2];
+        if (MultiByteToWideChar(CP_UTF8, 0, folder.c_str(), -1, wf, MAX_PATH * 2)) _wmkdir(wf);
+    }
     const char sep = '\\';
 #else
     mkdir(folder.c_str(), 0755);
@@ -36,13 +39,19 @@ std::string screenshot_path(const std::string& folder) {
     localtime_r(&now, &t);
 #endif
     char stamp[64];
-    strftime(stamp, sizeof stamp, "ReLink %Y-%m-%d %H-%M-%S", &t);
+    strftime(stamp, sizeof stamp, "Hookshot %Y-%m-%d %H-%M-%S", &t);
     for (int n = 1; n < 100; n++) {
         char tail[16] = "";
         if (n > 1) snprintf(tail, sizeof tail, " (%d)", n);
         const std::string path = folder + sep + stamp + tail + ".png";
+#ifdef _WIN32
+        wchar_t wp[MAX_PATH * 2];
+        if (!MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wp, MAX_PATH * 2)) return "";
+        if (GetFileAttributesW(wp) == INVALID_FILE_ATTRIBUTES) return path;
+#else
         struct stat sb;
         if (stat(path.c_str(), &sb) != 0) return path;
+#endif
     }
     return "";
 }
@@ -58,7 +67,7 @@ void release(T*& p) {
 bool screenshot_write(const std::string& path, const uint8_t* rgba, uint32_t w, uint32_t h) {
     if (path.empty() || !w || !h) return false;
     wchar_t wide[MAX_PATH * 2];
-    if (!MultiByteToWideChar(CP_ACP, 0, path.c_str(), -1, wide, MAX_PATH * 2)) return false;
+    if (!MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wide, MAX_PATH * 2)) return false;
     // (the encoder's 24 bits a pixel, blue first: the alpha the game leaves in its picture is not a transparency)
     const uint32_t stride = w * 3;
     std::vector<uint8_t> bgr((size_t)stride * h);
@@ -73,7 +82,7 @@ bool screenshot_write(const std::string& path, const uint8_t* rgba, uint32_t w, 
     IWICBitmapEncoder* encoder = nullptr;
     IWICBitmapFrameEncode* frame = nullptr;
     WICPixelFormatGUID format = GUID_WICPixelFormat24bppBGR;
-    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_IWICImagingFactory, (void**)&factory);
+    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
     const char* step = "the imaging factory";
     if (SUCCEEDED(hr)) step = "the stream", hr = factory->CreateStream(&stream);
     if (SUCCEEDED(hr)) step = "the file", hr = stream->InitializeFromFilename(wide, GENERIC_WRITE);

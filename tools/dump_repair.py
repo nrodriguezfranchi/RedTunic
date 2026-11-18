@@ -16,7 +16,7 @@ your own files. A stand-in is a relative, not the real texture: only a new dump 
 
     python -I tools/dump_repair.py <game folder>/romfs <game folder>/mods/00-dump-repair
 
-Needs the zstandard package (ReLink's own Python has it: tools/python/python.exe in its folder).
+Needs the zstandard package (Hookshot's own Python has it: tools/python/python.exe in its folder).
 """
 import os
 import re

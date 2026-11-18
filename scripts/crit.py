@@ -3,8 +3,9 @@ and renderer thread, "<ms> <name>|<frames>" (module+offset, leaf first).
 
     python -I scripts/crit.py work/runs/<run>_all.txt [top]
 
-A thread is running at an instant when its leaf is in relink-game.exe or relink_vk.dll (game code, the runtime, the
-renderer), blocked otherwise (the leaf in ntdll, win32u, KERNELBASE, the driver). Prints each thread's running share;
+A thread is blocked at an instant when its leaf is outside hookshot.exe / hookshot_vk.dll (on Linux hookshot /
+hookshot_vk.so) and the innermost frame of Hookshot's under it is a wait (prof.WAIT_FRAMES: a condition variable, a
+sleep, a fence, the present); running otherwise, libc's copies and the driver's own work included. RX_MAPS=<folder>: another build's linker maps, or on Linux the game folder (its binaries' symbols). Prints each thread's running share;
 then for the instants when no game thread runs (the frame waits on something outside the game's CPU work): what each
 thread waits in and what the renderer's threads do; then for the instants when the main thread is blocked: how many
 game threads run and the functions they are in.
@@ -13,18 +14,15 @@ import collections, os, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import prof  # noqa: E402
+import samples  # noqa: E402
 
-RUN_MODS = ("relink-game.exe", "relink_vk.dll")
+RUN_MODS = prof.RUN_MODS
 
 
 def main():
     path = sys.argv[1]
     top = int(sys.argv[2]) if len(sys.argv) > 2 else 25
-    maps = {}
-    for mod in RUN_MODS:
-        mp = os.path.join(os.environ.get("RX_MAPS", prof.BUILD), mod[:-4] + ".map")   # (RX_MAPS: another build's maps)
-        if os.path.exists(mp):
-            maps[mod] = prof.load_map(mp, 0x180000000 if mod.endswith(".dll") else 0x140000000)
+    maps = prof.load_symbols()
     cache = {}
 
     def name(frame):
@@ -37,19 +35,20 @@ def main():
             import bisect
             i = bisect.bisect_right(addrs, int(off, 16)) - 1
             if i >= 0:
-                r = mod.split(".")[0] + ":" + prof.demangle(names[i])
+                r = prof.module_name(mod) + ":" + prof.demangle(names[i])
         cache[frame] = r
         return r
 
     ticks = collections.defaultdict(dict)   # ms -> thread -> (running, frames named)
-    for line in open(path, encoding="utf-8", errors="replace"):
+    for line in samples.lines(path):   # (plain or packed)
         head, _, stack = line.rstrip("\n").partition("|")
         ms, _, thread = head.partition(" ")
         if not stack or not ms.isdigit():
             continue
         frames = stack.split(";")
         leafmod = frames[0].rpartition("+")[0]
-        ticks[int(ms)][thread] = (leafmod in RUN_MODS, [name(f) for f in frames])
+        named = [name(f) for f in frames]
+        ticks[int(ms)][thread] = (not prof.waiting(leafmod, named), named)
     n = len(ticks)
     print("%d instants" % n)
     running = collections.Counter()
@@ -67,9 +66,9 @@ def main():
 
     def guest_frame(frames):
         """the innermost game function (f_...) and the import it called, if any"""
-        imp = next((f for f in frames if ":imp_" in f), None)
+        imp = next((f for f in frames if ":imp_" in f or ":hle_" in f), None)   # (hle_<sym>: an HLE body not inlined)
         fn = next((f for f in frames if ":f_" in f), None)
-        return (imp.split(":imp_")[1][:48] + " <- " if imp else "") + (fn or frames[-1])
+        return (imp.replace(":hle_", ":imp_", 1).split(":imp_")[1][:48] + " <- " if imp else "") + (fn or frames[-1])
 
     idle = [t for t in ticks.values() if not any(r for th, (r, _) in t.items() if is_game(th))]
     print("-- no game thread running: %.1f%% of instants" % (100.0 * len(idle) / max(1, n)))
@@ -81,7 +80,7 @@ def main():
                 waits["%s: %s" % (th, guest_frame(frames))] += 1
             if not is_game(th):
                 vk["%s %s: %s" % (th, "runs" if r else "waits", frames[0] if not r else
-                                  next((f for f in frames if f.startswith("relink_vk:")), frames[0]))] += 1
+                                  next((f for f in frames if f.startswith("hookshot_vk:")), frames[0]))] += 1
     for k, c in waits.most_common(top):
         print("  %5.1f%%  %s" % (100.0 * c / max(1, len(idle)), k))
     print("  (renderer threads then)")

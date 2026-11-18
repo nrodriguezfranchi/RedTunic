@@ -6,4 +6,4 @@
 /* rx_option(HOS_OPT_TELEPORT_PICTURES) from the game side: whether the Travel page's pictures are taken (host/hos_main.c
    oot_capture_tick watches for Link settling at a place only then). Here and not in vk_api.h: that header is part of the
    shader cache's stamp, and a change to it makes every player prepare the shaders again */
-#define HOS_OPT_TELEPORT_PICTURES 43
+#define HOS_OPT_TELEPORT_PICTURES 74   /* (43 is Discord status's, 72 and 73 the item wheel's) */

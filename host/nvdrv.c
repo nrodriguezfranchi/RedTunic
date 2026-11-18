@@ -18,6 +18,9 @@
 #include <stdlib.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#ifndef HOOKSHOT_ENV_H   /* (env_on: the switches' one rule) */
+#include "../gpu/vk/compat/hookshot_env.h"
+#endif
 
 void hos_system_event_init(uint64_t key, int autoclear);
 void hos_system_event_signal(uint64_t key);
@@ -55,7 +58,7 @@ static uint8_t ctrl_early[64];     /* a fence on that event passed before the ga
 /* event waits that had not passed: signal the slot's event when the sync point reaches the value */
 static struct { int used; uint32_t slot, id, value; } pending[512];
 static int sync_trace = -1;   /* HOS_SYNC_TRACE=1: log fences and sync point waits */
-#define SYNC_LOG(...) do { if (sync_trace < 0) sync_trace = getenv("HOS_SYNC_TRACE") != NULL;                            if (sync_trace) hos_log(__VA_ARGS__); } while (0)
+#define SYNC_LOG(...) do { if (sync_trace < 0) sync_trace = env_on("HOS_SYNC_TRACE");                            if (sync_trace) hos_log(__VA_ARGS__); } while (0)
 static int next_syncpt = 24;   /* low ids belong to the system */
 
 /* ---- nvmap handles ---------------------------------------------------------------------------------------------- */
@@ -74,7 +77,7 @@ static int nmaps, capmaps;
 static uint64_t va_next = 0x400000000ULL, va_end = 1ULL << 40;   /* 40-bit GPU VA, as GM20B reports */
 
 static int map_trace = -1;   /* HOS_MAP_TRACE=1: log every GPU mapping change */
-#define MAP_LOG(...) do { if (map_trace < 0) map_trace = getenv("HOS_MAP_TRACE") != NULL;                           if (map_trace) hos_log(__VA_ARGS__); } while (0)
+#define MAP_LOG(...) do { if (map_trace < 0) map_trace = env_on("HOS_MAP_TRACE");                           if (map_trace) hos_log(__VA_ARGS__); } while (0)
 
 /* index of the last mapping starting at or below va, or -1 */
 static int map_floor(uint64_t va) {
@@ -147,7 +150,7 @@ void hos_gpu_track(uint64_t guest, uint64_t size, int on) {
     LOCK();
     if (on) map_add(guest, size, guest);
     else map_remove(guest);
-    /* (relink) kept sorted by (lo, hi): found by bisection, and hos_gpu_guest_ranges merges it without sorting */
+    /* (hookshot) kept sorted by (lo, hi): found by bisection, and hos_gpu_guest_ranges merges it without sorting */
     int l = 0, r = ntracked;
     while (l < r) {
         const int m = (l + r) / 2;
@@ -175,6 +178,42 @@ void hos_gpu_track(uint64_t guest, uint64_t size, int on) {
     UNLOCK();
 }
 
+/* (Hookshot, 2026-11-14) The native NVN pools live now, {guest start, end} each (at most max; the count is returned): the
+   counted list above, which a pool made over an older one's memory does not lose at the older one's finalize, as the GPU
+   mappings' list does (hos_gpu_pools). The Vulkan back end's capture (RX_VK_CAP_ONLY_GPU) clips its imports to these */
+__declspec(dllexport) int hos_gpu_live_pools(uint64_t (*out)[2], int max) {
+    LOCK();
+    int n = 0;
+    for (int i = 0; i < ntracked && n < max; i++) out[n][0] = tracked[i].lo, out[n][1] = tracked[i].hi, n++;
+    UNLOCK();
+    return n;
+}
+
+/* (Hookshot, 2026-11-14) The Vulkan back end's release of a mirror holding left-out write-backs (gpu/vk/vk_memory.cpp,
+   lazy_apply): n bytes of GPU results into guest memory at guest (within one page), only if the range lies in a native NVN
+   pool that is live now and the soft write watch has no CPU write of the page since its last collection. Under the lock
+   nvnMemoryPoolFinalize's untrack takes (hos_gpu_track), so a pool cannot be finalized and its memory handed back to the
+   game between the check and the copy. 1: written; 0: no live pool there (finalized: the game's memory again); 2: the CPU
+   wrote the page since (its bytes are newer). The write is not marked: it is the GPU's, as a write-back's copy is. */
+void hos_noaccess_write(int begin);   /* (hos_memsplit.c) */
+__declspec(dllexport) int hos_gpu_write_live(uint64_t guest, const void *src, uint64_t n) {
+    if (!n || (guest >> 12) != ((guest + n - 1) >> 12)) return 0;
+    hos_noaccess_write(1);
+    LOCK();
+    int live = 0;
+    for (int i = 0; i < ntracked && !live; i++) live = guest >= tracked[i].lo && guest + n <= tracked[i].hi;
+    int r = 0;
+    if (live) {
+#if defined(A64_WRITE_TRACK) && !defined(__EMSCRIPTEN__)
+        if (__atomic_load_n(&a64_dirty[(uint32_t)guest >> 12], __ATOMIC_ACQUIRE)) r = 2;
+#endif
+        if (!r) memcpy(GP(guest), src, (size_t)n), r = 1;
+    }
+    UNLOCK();
+    hos_noaccess_write(0);
+    return r;
+}
+
 /* The guest memory the GPU can reach (every mapping's guest range, merged, page aligned), for the renderer's change
    tracking: GetWriteWatch over the whole guest arena cost ~2.5 ms a call, and the GPU only reads these. Returns
    the number of ranges (at most max) written to out as {start, end} pairs. */
@@ -193,7 +232,7 @@ int hos_gpu_guest_ranges(uint64_t (*out)[2], int max) {
             capmerged = nall + 64;
             merged = (uint64_t (*)[2])realloc(merged, (size_t)capmerged * sizeof *merged);
         }
-        /* (relink) the GPU mappings come sorted by VA, which is their guest order when each maps its own address (the
+        /* (hookshot) the GPU mappings come sorted by VA, which is their guest order when each maps its own address (the
            native NVN pools): the tracked pools alone are sorted, then the two lists merged. A qsort of all of them ran
            on the game's main thread at every submit after a pool came or went (OoT's change every frame): qsort and its
            comparator were the main thread's busiest host code when it ran alone. Other mappings: qsort as before */
@@ -496,7 +535,10 @@ static uint32_t ioctl_gpu(int fd, uint32_t group, uint32_t nr, uint64_t p, uint6
         return NV_OK;
     case 0x18: case 0x1A: {   /* ALLOC_GPFIFO_EX(2) {u32 entries, jobs, flags; NvFence out; reserved} */
         LOCK();
-        if (!fds[fd].syncpt) fds[fd].syncpt = next_syncpt++;
+        if (!fds[fd].syncpt) {   /* (hookshot: ids are used again after the last one; they index syncpt[] and syncpt_max[]) */
+            fds[fd].syncpt = next_syncpt++;
+            if (next_syncpt >= SYNCPTS) next_syncpt = 24;
+        }
         UNLOCK();
         G32(p + 12) = (uint32_t)fds[fd].syncpt;
         if ((int32_t)(syncpt_max[fds[fd].syncpt] - syncpt[fds[fd].syncpt]) < 0)
@@ -509,6 +551,7 @@ static uint32_t ioctl_gpu(int fd, uint32_t group, uint32_t nr, uint64_t p, uint6
         uint32_t n = G32(p + 8), flags = G32(p + 12);
         uint64_t entries = in2 && in2size >= (uint64_t)n * 8 ? in2 : p + 24;   /* Ioctl2: inline; else after it */
         (void)size;
+        if (!hos_guest_range(entries, (uint64_t)n * 8)) return NV_BAD_PARAMETER;   /* (hookshot) */
         int sp = fds[fd].syncpt;
         /* add_increment (bit 1): the kernel appends two sync point increments after the work (suyu's
            BuildIncrementCommandList): the fence is the value they reach */
@@ -629,6 +672,8 @@ static uint32_t ioctl(Ctx *c, int fd, uint32_t cmd, uint64_t buf, uint64_t x2, u
     uint32_t nr = cmd & 0xFF, group = (cmd >> 8) & 0xFF;
     uint64_t size = (cmd >> 16) & 0x3FFF;
     uint32_t r;
+    /* (hookshot) the argument buffers lie in guest memory (the handlers read fixed fields up to 0x100 past the start) */
+    if (!hos_guest_range(buf, size + 0x100) || (x2 && !hos_guest_range(x2, x2size))) return NV_BAD_PARAMETER;
     switch (fds[fd].type) {
     case DEV_NVMAP: r = ioctl_nvmap(nr, buf); break;
     case DEV_AS_GPU: r = ioctl_as_gpu(nr, buf, size); break;

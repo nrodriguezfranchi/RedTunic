@@ -1,4 +1,4 @@
-"""(relink) The item wheel's names (gpu/vk/vk_menu.cpp): every item's name as the game writes it, in each of its
+"""(hookshot) The item wheel's names (gpu/vk/vk_menu.cpp): every item's name as the game writes it, in each of its
 languages, from the game's own messages (Mals/<region><lang>.Product.110.sarc.zs, ActorMsg/PouchContent.msbt: the
 <item>_Name entries), so the wheel names an item as the game does in the language it runs in.
 

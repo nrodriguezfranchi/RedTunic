@@ -1,4 +1,4 @@
-/* (relink, 15/11) The game's name searches, natively.
+/* (hookshot, 15/11) The game's name searches, natively.
 
    Arriving in Hyrule Castle, the game's OptimizeChangeBanc thread (it gets the next areas ready) ran in f_805aeea0 for 92 % of
    its samples in the long frames (hs2996). f_805aeea0 looks a key up in one of the game's sorted containers. Its two hot loops
@@ -24,7 +24,7 @@ static inline uint64_t ld64(uint64_t a) { uint64_t v; memcpy(&v, GP(a), 8); retu
 static inline uint32_t ld32(uint64_t a) { uint32_t v; memcpy(&v, GP(a), 4); return v; }
 static inline uint32_t ld8(uint64_t a) { return *(const uint8_t *)GP(a); }
 
-/* (relink, 15/11) The virtual cores' polls. The lifted loops poll at their backward branches (nx2/poll.py): every iteration
+/* (hookshot, 15/11) The virtual cores' polls. The lifted loops poll at their backward branches (nx2/poll.py): every iteration
    on its way back to the latch, and the strcmp after each group of 8 equal bytes. A thread a better waiter asked for its
    virtual core (hos_thread.c, vc_kick) gives it up there. The native loops check c->poll at the same places: after each
    iteration done here (one done by the lifted code polls there itself) and between the strcmp's groups. The registers are
@@ -160,7 +160,7 @@ static int names_mode(void) {
 }
 
 static volatile long st_heads, st_steps, st_left;
-/* (relink, 17/11) A search the game repeats without end: a player's scene load (Discord, Nax, entering the Market) sat in
+/* (hookshot, 17/11) A search the game repeats without end: a player's scene load (Discord, Nax, entering the Market) sat in
    OptimizeChangeBanc doing 1.46 million searches a second for minutes while the picture stood still, and the log only said
    how many. That thread does bursts of millions of searches in normal play too (every area it prepares: 2 million in under
    5 s in nearly every run here, with or without mods), so only a burst that does not stop is told: a thread that searched

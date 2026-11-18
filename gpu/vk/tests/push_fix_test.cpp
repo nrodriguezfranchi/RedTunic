@@ -1,4 +1,4 @@
-// Game-free regression for vk_push_fix.h (issue 640): the mesh shader fallback's task programs named the push constant block's
+// Game-free regression for vk_push_fix.h: the mesh shader fallback's task programs named the push constant block's
 // task payload address by its byte offset (64) where SPIR-V takes the member index (3), and NVIDIA's compiler faulted on the
 // module. A small hand-made module: a push block of five members at offsets 0, 16, 24, 64, 72, and access chains into it.
 //   clang++ -std=c++20 -O1 -Wall -Wextra gpu/vk/tests/push_fix_test.cpp -o push_fix_test.exe && push_fix_test.exe

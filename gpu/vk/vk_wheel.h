@@ -1,4 +1,4 @@
-// (relink) The item wheel's picture (vk_wheel.cpp): host/oot_wheel.c's state (oot_wheel_state.h) drawn on the CPU
+// (hookshot) The item wheel's picture (vk_wheel.cpp): host/oot_wheel.c's state (oot_wheel_state.h) drawn on the CPU
 // in the game's picture's size, and laid over the scene by vk_framegen.cpp framegen_wheel_backdrop, blurred and dimmed under it.
 #pragma once
 

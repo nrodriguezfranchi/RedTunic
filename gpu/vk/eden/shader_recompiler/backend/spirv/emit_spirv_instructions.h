@@ -33,6 +33,7 @@ void EmitPhiMove(EmitContext&);
 void EmitJoin(EmitContext& ctx);
 void EmitDemoteToHelperInvocation(EmitContext& ctx);
 void EmitBarrier(EmitContext& ctx);
+void EmitSubgroupBarrier(EmitContext& ctx);
 void EmitWorkgroupMemoryBarrier(EmitContext& ctx);
 void EmitDeviceMemoryBarrier(EmitContext& ctx);
 void EmitPrologue(EmitContext& ctx);
@@ -62,12 +63,13 @@ void EmitSetAttributeIndexed(EmitContext& ctx, Id offset, Id value, Id vertex);
 Id EmitGetPatch(EmitContext& ctx, IR::Patch patch);
 void EmitSetPatch(EmitContext& ctx, IR::Patch patch, Id value);
 Id EmitIsbeRead(EmitContext& ctx, Id address);
+Id EmitIsbeReadOutput(EmitContext& ctx, Id address);
 void EmitIsbeWriteAttribute(EmitContext& ctx, Id address, Id value);
 void EmitIsbeWriteMapU8(EmitContext& ctx, Id address, Id value);
 void EmitIsbeWriteMapU32(EmitContext& ctx, const IR::Value& address, Id value);
 void EmitMeshPrologue(EmitContext& ctx);
 void EmitMeshEpilogue(EmitContext& ctx);
-// (relink) a GPU without mesh shaders: the generated vertex stage that reads the mesh epilogue's records
+// (hookshot) a GPU without mesh shaders: the generated vertex stage that reads the mesh epilogue's records
 void EmitMeshFallbackVertexBody(EmitContext& ctx);
 void EmitSetFragColor(EmitContext& ctx, u32 index, u32 component, Id value);
 void EmitSetSampleMask(EmitContext& ctx, Id value);
@@ -642,5 +644,8 @@ Id EmitDPdxFine(EmitContext& ctx, Id op_a);
 Id EmitDPdyFine(EmitContext& ctx, Id op_a);
 Id EmitDPdxCoarse(EmitContext& ctx, Id op_a);
 Id EmitDPdyCoarse(EmitContext& ctx, Id op_a);
+
+// (hookshot) Helpers the emitters share, not IR instructions
+Id IsNan(EmitContext& ctx, Id value, u32 bits);   // (OpIsNan, or a test of the bits: mma_layout.h nan_bits)
 
 } // namespace Shader::Backend::SPIRV

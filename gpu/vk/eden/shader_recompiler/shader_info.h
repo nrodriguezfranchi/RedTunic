@@ -229,8 +229,16 @@ struct TextureDescriptor {
     u32 count;
     u32 size_shift;
     /// Index in Info::handle_programs when the handle is computed at draw time (read from a
-    /// storage buffer), ~0 when it is the constant buffer word above.
+    /// storage buffer), ~0 when it is the constant buffer word above. With a count above 1 the
+    /// program computes the handle of each element (HandleOp::Index): a handle the shader reads
+    /// from a table at an index only each invocation knows, the shader indexing the array.
     u32 handle_program{~0U};
+    /// The type is the instruction's own (TEX, TLD, TXD...) and no answer about the bound texture set it.
+    /// False for a size query that had to ask (TexturePass, ImageQueryDimensions), and for a descriptor it shares.
+    bool type_fixed{};
+    /// (Lichii 282a585a) The constant buffer word above reaches the handle only as the address of a
+    /// load: a pointer, never a texture handle, which binds no texture (vk_draw.cpp)
+    bool handle_is_pointer_word{};
 
     auto operator<=>(const TextureDescriptor&) const = default;
 };
@@ -275,7 +283,7 @@ struct MeshInfo {
 struct Info {
     static constexpr size_t MAX_INDIRECT_CBUFS{14};
     static constexpr size_t MAX_CBUFS{18};
-    // (relink, as Lichii #434: 64. Fritchii's pass binds every candidate pointer of an ambiguous access; the back end's
+    // (hookshot, as Lichii #434: 64. Fritchii's pass binds every candidate pointer of an ambiguous access; the back end's
     // layouts are built from the list, gpu/vk/vk_draw.cpp ensure_layout)
     static constexpr size_t MAX_SSBOS{64};
 
@@ -320,7 +328,7 @@ struct Info {
     bool uses_local_memory{};
 
     bool uses_fp16{};
-    bool uses_cooperative_matrix{};   // (relink: HMMA_nx2)
+    bool uses_cooperative_matrix{};   // (hookshot: HMMA_nx2)
     bool uses_fp64{};
     bool uses_fp16_denorms_flush{};
     bool uses_fp16_denorms_preserve{};
@@ -368,7 +376,7 @@ struct Info {
     u32 constant_buffer_mask{};
     std::array<u32, MAX_CBUFS> constant_buffer_used_sizes{};
     u32 nvn_buffer_base{};
-    // (relink) storage buffer tables: NVN descriptors (address, size) at cbuf_offset + 16k of a constant buffer,
+    // (hookshot) storage buffer tables: NVN descriptors (address, size) at cbuf_offset + 16k of a constant buffer,
     // which global memory accesses pick at run time (OoT's froxel fog: c4 + 0xe0 + 16 * a loop index). The global
     // memory fallbacks search their kGlobalTableSize entries (AddNVNStorageBuffers adds them as descriptors).
     static constexpr u32 kGlobalTableSize{16};
@@ -417,13 +425,15 @@ enum class HandleOp : u32 {
     Select, ///< condition, true value, false value
     Tee,    ///< slot: keeps the top value in the slot (shared subexpressions)
     Load,   ///< slot: the value kept there
+    Index,  ///< the element of the descriptor array being computed (see TextureDescriptor)
 };
 
 /// Runs a handle program; read_cbuf(index, offset) and read_storage(binding, offset) return the
-/// words it reads. Returns nothing for a malformed program.
+/// words it reads, and element is the descriptor array element computed (HandleOp::Index).
+/// Returns nothing for a malformed program.
 template <typename ReadCbuf, typename ReadStorage>
 std::optional<u32> EvaluateHandleProgram(std::span<const u32> code, ReadCbuf&& read_cbuf,
-                                         ReadStorage&& read_storage) {
+                                         ReadStorage&& read_storage, u32 element = 0) {
     std::array<u32, 64> stack{};
     std::array<u32, 256> slots{};
     size_t size = 0;
@@ -466,6 +476,10 @@ std::optional<u32> EvaluateHandleProgram(std::span<const u32> code, ReadCbuf&& r
         if (op == HandleOp::Load) {
             const u32 slot = operand();
             push(slot < slots.size() ? slots[slot] : 0U);
+            continue;
+        }
+        if (op == HandleOp::Index) {
+            push(element);
             continue;
         }
         if (op == HandleOp::Select) {

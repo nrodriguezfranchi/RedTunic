@@ -1,4 +1,4 @@
-// GPU profile (diagnostics): RX_VK_PASS_TIMING=1 (RX_VK_GPU_PROFILE=1 is the same) times the GPU's work with timestamps: every render
+// GPU profile (diagnostics): RX_VK_PASS_TIMING=1 times the GPU's work with timestamps: every render
 // pass, compute dispatch, barrier, texture/buffer copy, mirror sync, write-back and uniform write of the recordings' command buffers,
 // and of their upload command buffers, each a pair of timestamps labelled by what it was. Every 600 presents it logs, per frame: the
 // kinds of span with their totals, and the labels that took the most GPU time.
@@ -25,6 +25,9 @@ bool gprof_begin(VkCommandBuffer cmd);
 void gprof_end(VkCommandBuffer cmd, const std::string& label, int items = 1, uint64_t bytes = 0);
 /// A draw of program key into the open pass (RX_VK_PASS_TIMING=2): the run of draws of one program is timed
 void gprof_run(VkCommandBuffer cmd, uint64_t key);
+/// The GPU's busy tail before a late-page wait ended, in GPU ticks: the spans collected inside it are counted apart
+/// (the report's 'tail' lines: the GPU work a late wait waited for)
+void gprof_tail(uint64_t lo, uint64_t hi);
 /// The slot's work completed: its spans are added to the totals
 void gprof_collect(int slot);
 /// Every 120 presents (frames of them): every 600, the report

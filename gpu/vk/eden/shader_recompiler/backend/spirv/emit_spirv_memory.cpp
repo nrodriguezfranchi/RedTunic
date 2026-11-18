@@ -78,7 +78,7 @@ void WriteStorageByCasLoop(EmitContext& ctx, const IR::Value& binding, const IR:
 }
 } // Anonymous namespace
 
-// (relink) 8- and 16-bit loads through a pointer no storage buffer was found for: the aligned 32-bit word by the same
+// (hookshot) 8- and 16-bit loads through a pointer no storage buffer was found for: the aligned 32-bit word by the same
 // search as LoadGlobal32, and the byte or half of it the address names (the console's loads are naturally aligned). They
 // threw "not implemented": 30 of OoT's mesh programs (LoadGlobalS16) were left untranslated on every card, issue 351
 namespace {
@@ -136,13 +136,17 @@ Id EmitLoadGlobal128(EmitContext& ctx, Id address) {
     return ctx.Const(0u, 0u, 0u, 0u);
 }
 
-// (relink) 8- and 16-bit stores through a pointer no storage buffer was found for: the aligned 32-bit word by the same
+// (hookshot) 8- and 16-bit stores through a pointer no storage buffer was found for: the aligned 32-bit word by the same
 // search as LoadGlobal32, changed in place with a compare-exchange loop (spirv_emit_context.cpp). They threw "not
 // implemented", the same gap as the narrow loads (issue 192)
 namespace {
 void WriteGlobalNarrow(EmitContext& ctx, Id address, Id value, u32 bits) {
     if (!ctx.profile.support_int64) {
         LOG_WARNING(Shader_SPIRV, "Int64 not supported, ignoring memory operation");
+        return;
+    }
+    if (const Id direct{bits == 8 ? ctx.write_global_u8_func : ctx.write_global_u16_func}; Sirit::ValidId(direct)) {
+        ctx.OpFunctionCall(ctx.TypeVoid(), direct, address, value);   // (the byte or half written directly: spirv_emit_context.cpp)
         return;
     }
     const Id low{ctx.OpUConvert(ctx.U32[1], ctx.OpBitwiseAnd(ctx.U64, address, ctx.Constant(ctx.U64, u64{3})))};

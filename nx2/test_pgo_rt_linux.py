@@ -109,7 +109,7 @@ def main():
     if re.search(r'\[\s*["\']-fprofile-instr-generate', build_text[start:end]):
         raise SystemExit("pgo rt linux: final Linux link must not request compiler-rt profile")
 
-    with tempfile.TemporaryDirectory(prefix="relink-pgo-rt-") as td:
+    with tempfile.TemporaryDirectory(prefix="hookshot-pgo-rt-") as td:
         tmp = Path(td)
         source = tmp / "driver.c"
         source.write_text(DRIVER, encoding="utf-8")

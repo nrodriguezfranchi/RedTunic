@@ -272,6 +272,18 @@ void VisitUsages(Info& info, IR::Inst& inst) {
     default:
         break;
     }
+    switch (inst.GetOpcode()) {   // (hookshot) narrow global stores: a narrow storage view for the direct write
+    case IR::Opcode::WriteGlobalU8:
+    case IR::Opcode::WriteGlobalS8:
+        info.used_storage_buffer_types |= IR::Type::U8;
+        break;
+    case IR::Opcode::WriteGlobalU16:
+    case IR::Opcode::WriteGlobalS16:
+        info.used_storage_buffer_types |= IR::Type::U16;
+        break;
+    default:
+        break;
+    }
     switch (inst.GetOpcode()) {
     case IR::Opcode::GetCbufU16:
     case IR::Opcode::GetCbufS16:
@@ -691,8 +703,7 @@ void VisitUsages(Info& info, IR::Inst& inst) {
         break;
     case IR::Opcode::GlobalAtomicAddF32:
     case IR::Opcode::StorageAtomicAddF32:
-        // (relink: F32 too, for the native float add where the device has it, emit_spirv_atomic.cpp)
-        info.used_storage_buffer_types |= IR::Type::U32 | IR::Type::F32;
+        info.used_storage_buffer_types |= IR::Type::U32;
         info.uses_atomic_f32_add = true;
         break;
     case IR::Opcode::GlobalAtomicAddF16x2:
@@ -987,6 +998,7 @@ thread_local u32 g_nvn2_compute_layout_end{0};
 thread_local bool g_nvn2_miss_log_this{true};
 /// (RX_VK_ALL_GLOBAL_PROGS=<key prefix>[,...], a test: the program's memory accesses all left global, none bound)
 thread_local bool g_all_global_this{false};
+thread_local bool g_gm_port_this{false};   // (hookshot: EDEN_NX2_GM_PORT_PROGS names the program being translated)
 
 void CollectShaderInfoPass(Environment& env, IR::Program& program) {
     Info& info{program.info};
@@ -995,7 +1007,7 @@ void CollectShaderInfoPass(Environment& env, IR::Program& program) {
         case Stage::VertexA:
         case Stage::VertexB:
             return 0x110u;
-        case Stage::Task:   // (relink: NVN2's tables, gpu/vk/vk_bank.cpp. At the vertex and tessellation stages' here no buffer of
+        case Stage::Task:   // (hookshot: NVN2's tables, gpu/vk/vk_bank.cpp. At the vertex and tessellation stages' here no buffer of
             return 0x670u;  // these programs counted as used, and every read through a pointer into one gave 0)
         case Stage::Mesh:
             return 0x770u;

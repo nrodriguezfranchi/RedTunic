@@ -1,0 +1,168 @@
+"""The game's CPU target follows the PC that builds it, the Vulkan back end's too: the AppImage carries no renderer built for
+x86-64-v3, so a CPU without AVX2 builds and plays, and nothing refuses it (nx2/host_cpu.py). Game-free.
+
+python -I -B tests/test_cpu_target.py
+"""
+import builtins
+import contextlib
+import importlib.util
+import io
+import os
+from pathlib import Path
+import sys
+import unittest
+from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+host_cpu = load("host_cpu_under_test", ROOT / "nx2" / "host_cpu.py")
+
+# (/proc/cpuinfo flags, cut to what matters plus some noise)
+HASWELL = "fpu sse sse2 pni ssse3 fma cx16 sse4_1 sse4_2 movbe popcnt xsave avx f16c lahf_lm abm bmi1 avx2 bmi2"
+IVY_BRIDGE = "fpu sse sse2 pni ssse3 cx16 sse4_1 sse4_2 popcnt xsave avx f16c lahf_lm"   # (the Xeon E5-2667 v2 of 363)
+CORE2 = "fpu sse sse2 pni ssse3 cx16 lahf_lm"
+
+
+def cpuinfo(flags):
+    return "processor\t: 0\nvendor_id\t: GenuineIntel\nflags\t\t: %s\nvmx flags\t: ept\n\nprocessor\t: 1\n" \
+           "flags\t\t: %s\n" % (flags, flags)
+
+
+def march_on_linux(text):
+    real_open = builtins.open
+
+    def fake_open(path, *args, **kwargs):
+        if path == "/proc/cpuinfo":
+            return io.StringIO(text)
+        return real_open(path, *args, **kwargs)
+    with mock.patch.object(host_cpu.os, "name", "posix"), mock.patch.object(builtins, "open", fake_open):
+        return host_cpu.host_march()
+
+
+class HostMarch(unittest.TestCase):
+    def test_levels_from_cpuinfo(self):
+        self.assertEqual(march_on_linux(cpuinfo(HASWELL)), "x86-64-v3")
+        self.assertEqual(march_on_linux(cpuinfo(IVY_BRIDGE)), "x86-64-v2")
+        self.assertEqual(march_on_linux(cpuinfo(CORE2)), "x86-64")
+
+    def test_unreadable_cpu_keeps_v3(self):
+        self.assertEqual(march_on_linux("processor\t: 0\n"), "x86-64-v3")
+
+    def test_windows(self):
+        class K32:
+            def __init__(self, present):
+                self.IsProcessorFeaturePresent = lambda pf: pf in present
+        for present, want in (({38, 40}, "x86-64-v3"), ({38}, "x86-64-v2"), (set(), "x86-64")):
+            ctypes = mock.MagicMock()
+            ctypes.windll.kernel32 = K32(present)
+            with mock.patch.object(host_cpu.os, "name", "nt"), mock.patch.dict(sys.modules, {"ctypes": ctypes}):
+                self.assertEqual(host_cpu.host_march(), want, present)
+
+    def test_build_and_appimage_use_it(self):
+        build = (ROOT / "nx2" / "build.py").read_text(encoding="utf-8")
+        self.assertIn("from host_cpu import host_march", build)
+        self.assertIn('MARCH = os.environ.get("RX_MARCH") or host_march()', build)
+        # (the AppImage builds no renderer for a fixed level: a player's build compiles it, for that player's CPU)
+        appimage = (ROOT / "scripts" / "linux" / "appimage.sh").read_text(encoding="utf-8")
+        self.assertNotIn("RX_VK_ONLY", appimage)
+        self.assertNotIn("-I nx2/build.py", appimage)
+
+    def test_build_message_names_the_cause(self):
+        """'this CPU has no AVX2' only when the CPU chose the level: an RX_MARCH of znver2 (AVX2 and more) said it too"""
+        build = (ROOT / "nx2" / "build.py").read_text(encoding="utf-8")
+        start = build.index('MARCH = os.environ.get("RX_MARCH") or host_march()')
+        block = build[start:build.index("CPU = [", start)]
+        for env, host, want in (({"RX_MARCH": "znver2"}, "x86-64-v3", "built for znver2 (RX_MARCH)"),
+                                ({"RX_MARCH": "x86-64-v3"}, "x86-64", ""),
+                                ({}, "x86-64-v2", "this CPU has no AVX2"),
+                                ({}, "x86-64-v3", "")):
+            out = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=True), contextlib.redirect_stdout(out):
+                exec(block, {"os": os, "host_march": lambda h=host: h})
+            if want:
+                self.assertIn(want, out.getvalue(), env)
+            else:
+                self.assertEqual(out.getvalue(), "", env)
+            if env:
+                self.assertNotIn("no AVX2", out.getvalue(), env)
+
+
+def clang_says(cpu, feats, tune=None):
+    """What `clang -march=native -###` writes to stderr, cut to the cc1 line's parts that matter"""
+    words = ['"/usr/bin/clang-23"', '"-cc1"', '"-triple"', '"x86_64-unknown-linux-gnu"']
+    if cpu:
+        words += ['"-target-cpu"', '"%s"' % cpu]
+    for f in feats:
+        words += ['"-target-feature"', '"%s"' % f]
+    if tune:
+        words += ['"-tune-cpu"', '"%s"' % tune]
+    return "clang version 23.1.5\nTarget: x86_64-unknown-linux-gnu\n " + " ".join(words) + "\n"
+
+
+class NativeCpu(unittest.TestCase):
+    """-march=native is keyed by the CPU clang resolves it to: another CPU, another key"""
+
+    def native(self, stderr=None, raises=None):
+        run = mock.MagicMock(side_effect=raises) if raises else \
+            mock.MagicMock(return_value=mock.MagicMock(stderr=stderr, stdout=""))
+        with mock.patch("subprocess.run", run):
+            return host_cpu.native_cpu("clang", ["-march=native"]), run
+
+    def test_cpu_tune_and_features_name_it(self):
+        zen4, run = self.native(clang_says("znver4", ["+avx512f", "+avx2", "-amx-tile"], "znver4"))
+        self.assertTrue(zen4.startswith("znver4_znver4_"), zen4)
+        self.assertIn("-###", run.call_args[0][0])
+        self.assertIn("-march=native", run.call_args[0][0])
+        # (the feature list's order is not a change)
+        self.assertEqual(self.native(clang_says("znver4", ["-amx-tile", "+avx2", "+avx512f"], "znver4"))[0], zen4)
+
+    def test_another_cpu_another_name(self):
+        zen4 = self.native(clang_says("znver4", ["+avx512f", "+avx2"]))[0]
+        # (the same model with AVX-512 off, as some BIOSes and VMs do: the name alone would not tell them apart)
+        no512 = self.native(clang_says("znver4", ["-avx512f", "+avx2"]))[0]
+        zen3 = self.native(clang_says("znver3", ["+avx2"]))[0]
+        self.assertEqual(len({zen4, no512, zen3}), 3)
+        self.assertTrue(zen3.startswith("znver3_znver3_"), zen3)   # (no -tune-cpu: tuned for the CPU itself)
+
+    def test_no_answer_is_none(self):
+        self.assertIsNone(self.native(clang_says(None, ["+avx2"]))[0])
+        self.assertIsNone(self.native(clang_says("native", []))[0])
+        self.assertIsNone(self.native("")[0])
+        self.assertIsNone(self.native(raises=OSError("no clang"))[0])
+
+    def test_build_keys_and_defaults_it(self):
+        build = (ROOT / "nx2" / "build.py").read_text(encoding="utf-8")
+        start = build.index('_CLANG = toolchain.find("clang")')
+        block = build[start:build.index("OPT = ", start)]
+        # (native only where the CPU chose v3, never over an RX_MARCH; its name is in the flags, so in every object key)
+        self.assertIn('if not os.environ.get("RX_MARCH") and MARCH == "x86-64-v3"', block)
+        self.assertIn('CPU += ["-DHOOKSHOT_NATIVE_CPU=" + _native]', block)
+        self.assertIn("sys.exit(", block)   # (an RX_MARCH=native that clang can't resolve stops the build)
+        # Red Tunic tunes Ryzen builds without extending the x86-64-v3 instruction set.
+        self.assertIn('CPU.append("-mtune=" + tune)', block)
+        self.assertIn('re.fullmatch(r"znver[1-5]"', block)
+        self.assertNotIn("host_mtune", build)
+
+
+class NoCpuRefusal(unittest.TestCase):
+    """make_game.py refused a CPU without AVX2 in the AppImage, whose prebuilt renderer was x86-64-v3's. That
+    renderer is gone (every build compiles its own, for its CPU), and the refusal with it"""
+
+    def test_make_game_refuses_no_cpu(self):
+        src = (ROOT / "nx2" / "make_game.py").read_text(encoding="utf-8")
+        self.assertNotIn("def check_cpu(", src)
+        self.assertNotIn("check_cpu(", src)
+        self.assertNotIn("no AVX2", src)
+        self.assertNotIn("HOOKSHOT_VK_PREBUILT", src)
+
+
+if __name__ == "__main__":
+    unittest.main()

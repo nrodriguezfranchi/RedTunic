@@ -1,4 +1,4 @@
-/* The Travel page's places, after the Fast Travel mod's list (MIT: its copyright and permission notice are in NOTICE.md),
+/* The Travel page's places, after the Fast Travel mod's list (MIT: its copyright and permission notice are in oot_tp_places.LICENSE),
    grouped by the Zelda Wiki's regions. */
 /* The Teleport page's places (gpu/vk/vk_menu.cpp) and their warps (host/hos_main.c), C and C++. */
 #pragma once

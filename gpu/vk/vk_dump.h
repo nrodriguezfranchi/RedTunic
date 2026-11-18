@@ -8,8 +8,9 @@
 
 namespace mkwvk {
 
-/// The frame being recorded is dumped
-bool dump_on();
+extern bool dump_armed;
+/// The frame being recorded is dumped (asked at every texture of every draw: a read here, not a call into vk_dump.cpp)
+inline bool dump_on() { return dump_armed; }
 /// The number the next step's dump gets (draws logged before it are in it)
 int dump_seq();
 /// A present (the count so far): arms the dump of the frame after it, or ends the one before
@@ -26,7 +27,7 @@ void dump_buffer(VkCommandBuffer cmd, VkBuffer src, VkDeviceSize off, VkDeviceSi
 bool dump_pending();
 /// Writes and frees the copies (their submission completed)
 void dump_write();
-/// The PNG writer (vk_replay.cpp): rgba is w x h RGBA8, the alpha left out
-void write_png(const char* path, const uint8_t* rgba, uint32_t w, uint32_t h);
+/// Publish a complete PNG (vk_replay.cpp): rgba is w x h RGBA8, alpha left out. False preserves an old destination.
+bool write_png(const char* path, const uint8_t* rgba, uint32_t w, uint32_t h);
 
 } // namespace mkwvk

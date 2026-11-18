@@ -1,4 +1,4 @@
-/* (relink) The item wheel's state, shared by the game side (host/oot_wheel.c fills it) and the Vulkan back end
+/* (hookshot) The item wheel's state, shared by the game side (host/oot_wheel.c fills it) and the Vulkan back end
    (gpu/vk/vk_wheel.cpp draws it), and the Gameplay tab's two rows for it. Kept out of vk_api.h, which is part of the
    program cache's stamp (nx2/build.py): a change there makes every player prepare their shaders again. The back end asks
    for the state through the host table's mic_name, with MKWVK_WHEEL_QUERY for the index (host/rx_backend.c), as the
@@ -10,7 +10,7 @@
 /* the Gameplay tab's Item wheel row: 1 the wheel, 0 the game's own item row; and its Cycle items row: 0 off, 1 Last used
    (a tap of R or L puts back the item on ZR before this one), 2 the arrows, bottles and spells, 3 and the bombs, 4 and the
    hookshot and hammer (a tap changes the ZR item within its group) */
-enum { HOS_OPT_ITEM_WHEEL = 40, HOS_OPT_CYCLE_ITEMS };
+enum { HOS_OPT_ITEM_WHEEL = 72, HOS_OPT_CYCLE_ITEMS };   /* (72 and 73: 40 is HDR Native's, gpu/vk/vk_api.h) */
 
 /* the index of mic_name (MkwVkHost) that asks for the item wheel's state instead of a microphone's name: the answer is a
    const MkwVkWheel *, never null with the host of this build */

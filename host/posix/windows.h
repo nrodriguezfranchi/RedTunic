@@ -1,17 +1,18 @@
-/* (linux) The part of the Win32 API ReLink's runtime and Vulkan back end use, on POSIX: host/posix is on the include
+/* (linux) The part of the Win32 API Hookshot's runtime and Vulkan back end use, on POSIX: host/posix is on the include
    path of Linux builds only (nx2/build.py), so `#include <windows.h>` finds this file and the Windows code paths stay
-   as they are. Implemented in win32_posix.c (threads, events, fibers, files, memory, modules, exceptions, waveOut),
-   gdi_posix.c (the bit of GDI the Insert menu draws its text with) and display_sdl.c (the window, keyboard, mouse).
+   as they are. Implemented in win32_posix.c (threads, events, fibers, files, memory, modules, exceptions, waveOut) and
+   display_sdl.c (the window, keyboard, mouse).
 
    Not a general emulation: what is here is what the code calls, with the behaviour it relies on. Handles are
    pointers to objects of this file's own (threads, events, timers, files, find searches); the guest window is one
    mapping (hos_main.c), so committing memory is a no-op and decommitting zeroes it. */
-#ifndef RELINK_POSIX_WINDOWS_H
-#define RELINK_POSIX_WINDOWS_H
+#ifndef HOOKSHOT_POSIX_WINDOWS_H
+#define HOOKSHOT_POSIX_WINDOWS_H
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
 #include <errno.h>
+#include <execinfo.h>
 #include <pthread.h>
 #include <sched.h>
 #include <stddef.h>
@@ -85,11 +86,11 @@ typedef struct { LONG cx, cy; } SIZE;
 #define HIWORD(l) ((WORD)(((uintptr_t)(l) >> 16) & 0xffff))
 #define RGB(r, g, b) ((COLORREF)(((BYTE)(r) | ((WORD)((BYTE)(g)) << 8)) | (((DWORD)(BYTE)(b)) << 16)))
 #define UNREFERENCED_PARAMETER(x) ((void)(x))
-#define __declspec(x) RELINK_DECLSPEC_##x
-#define RELINK_DECLSPEC_dllexport __attribute__((visibility("default")))
-#define RELINK_DECLSPEC_dllimport
-#define RELINK_DECLSPEC_noinline __attribute__((noinline))
-#define RELINK_DECLSPEC_thread __thread
+#define __declspec(x) HOOKSHOT_DECLSPEC_##x
+#define HOOKSHOT_DECLSPEC_dllexport __attribute__((visibility("default")))
+#define HOOKSHOT_DECLSPEC_dllimport
+#define HOOKSHOT_DECLSPEC_noinline __attribute__((noinline))
+#define HOOKSHOT_DECLSPEC_thread __thread
 #define _stricmp strcasecmp
 #define _strnicmp strncasecmp
 #define _strdup strdup
@@ -151,13 +152,10 @@ void SetLastError(DWORD e);
 #define YieldProcessor() __builtin_ia32_pause()
 
 /* ---- locks: SRW locks are POSIX rwlocks (zero-initialised is valid, as on Windows); condition variables a futex
-   word and waiter count (8 bytes, matching Win64), so they wait with either an SRW lock or a critical section ---- */
+   word, so they wait with either an SRW lock or a critical section ---- */
 typedef pthread_rwlock_t SRWLOCK, *PSRWLOCK;
 #define SRWLOCK_INIT PTHREAD_RWLOCK_INITIALIZER
-typedef struct {
-    volatile uint32_t seq;
-    volatile uint32_t waiters;
-} CONDITION_VARIABLE, *PCONDITION_VARIABLE;
+typedef struct { volatile uint32_t seq, waiters; } CONDITION_VARIABLE, *PCONDITION_VARIABLE;
 #define CONDITION_VARIABLE_INIT {0, 0}
 #define CONDITION_VARIABLE_LOCKMODE_SHARED 0x1
 typedef pthread_mutex_t CRITICAL_SECTION, *LPCRITICAL_SECTION;
@@ -174,10 +172,7 @@ static inline void EnterCriticalSection(CRITICAL_SECTION *cs) { pthread_mutex_lo
 static inline void LeaveCriticalSection(CRITICAL_SECTION *cs) { pthread_mutex_unlock(cs); }
 static inline BOOL TryEnterCriticalSection(CRITICAL_SECTION *cs) { return pthread_mutex_trylock(cs) == 0; }
 static inline void DeleteCriticalSection(CRITICAL_SECTION *cs) { pthread_mutex_destroy(cs); }
-static inline void InitializeConditionVariable(CONDITION_VARIABLE *cv) {
-    cv->seq = 0;
-    cv->waiters = 0;
-}
+static inline void InitializeConditionVariable(CONDITION_VARIABLE *cv) { cv->seq = 0; cv->waiters = 0; }
 void WakeConditionVariable(CONDITION_VARIABLE *cv);
 void WakeAllConditionVariable(CONDITION_VARIABLE *cv);
 BOOL SleepConditionVariableSRW(CONDITION_VARIABLE *cv, SRWLOCK *l, DWORD ms, ULONG flags);
@@ -242,6 +237,8 @@ static inline DWORD GetCurrentProcessId(void) { return (DWORD)getpid(); }
 DWORD GetCurrentThreadId(void);
 DWORD GetThreadId(HANDLE t);
 DWORD GetProcessId(HANDLE p);
+/* (this process only) a copy that fails on a page that is not mapped or not readable instead of faulting */
+BOOL ReadProcessMemory(HANDLE p, LPCVOID from, void *to, SIZE_T n, SIZE_T *got);
 HANDLE OpenThread(DWORD access, BOOL inherit, DWORD id);
 BOOL DuplicateHandle(HANDLE sp, HANDLE src, HANDLE tp, HANDLE *out, DWORD access, BOOL inherit, DWORD options);
 BOOL CloseHandle(HANDLE h);
@@ -344,11 +341,25 @@ static inline SIZE_T GetLargePageMinimum(void) { return 0; }
 #define GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS 0x4
 HMODULE LoadLibraryA(LPCSTR name);
 #define LoadLibrary LoadLibraryA
+/* (hookshot) why this thread's last LoadLibraryA failed, as dlerror() said (a missing file, or a symbol the library needs
+   and nothing loaded has); "" when it did not. GetLastError() is ERROR_FILE_NOT_FOUND for every failure */
+const char *hos_load_error(void);
 BOOL FreeLibrary(HMODULE m);
 FARPROC GetProcAddress(HMODULE m, LPCSTR name);
 HMODULE GetModuleHandleA(LPCSTR name);
 BOOL GetModuleHandleExA(DWORD flags, LPCSTR name, HMODULE *out);
 DWORD GetModuleFileNameA(HMODULE m, LPSTR out, DWORD cap);
+/* (glibc's backtrace: this thread's return addresses, the first `skip` and this call's own frame left out, as on Windows:
+   not inlined, so that backtrace's first frame is this function's. RX_VK_RB_PROF's call sites; GetModuleHandleA(NULL) is
+   not the exe's base here, so they are offsets from gpu/vk/exe_base.h's) */
+static __attribute__((noinline, unused)) USHORT CaptureStackBackTrace(DWORD skip, DWORD count, void **out, DWORD *hash) {
+    void *bt[64];
+    const int n = backtrace(bt, 64);
+    USHORT k = 0;
+    for (int i = (int)skip + 1; i < n && k < count; i++) out[k++] = bt[i];
+    if (hash) *hash = 0;
+    return k;
+}
 BOOL SetCurrentDirectoryA(LPCSTR dir);
 DWORD GetCurrentDirectoryA(DWORD cap, LPSTR out);
 
@@ -367,6 +378,7 @@ DWORD GetCurrentDirectoryA(DWORD cap, LPSTR out);
 #define FILE_ATTRIBUTE_HIDDEN 0x2
 #define FILE_ATTRIBUTE_DIRECTORY 0x10
 #define FILE_ATTRIBUTE_NORMAL 0x80
+#define FILE_ATTRIBUTE_REPARSE_POINT 0x400   /* (a symbolic link: find_next sets it) */
 #define FILE_FLAG_SEQUENTIAL_SCAN 0x08000000
 #define FILE_FLAG_RANDOM_ACCESS 0x10000000
 #define FILE_FLAG_OVERLAPPED 0x40000000
@@ -475,6 +487,8 @@ static inline void *RtlVirtualUnwind(DWORD type, DWORD64 base, DWORD64 pc, PRUNT
 #define VK_LBUTTON 0x01
 #define VK_RBUTTON 0x02
 #define VK_MBUTTON 0x04
+#define VK_XBUTTON1 0x05   /* (Mouse 4 and Mouse 5, the side buttons) */
+#define VK_XBUTTON2 0x06
 #define VK_BACK 0x08
 #define VK_TAB 0x09
 #define VK_RETURN 0x0D
@@ -496,6 +510,10 @@ static inline void *RtlVirtualUnwind(DWORD type, DWORD64 base, DWORD64 pc, PRUNT
 #define VK_INSERT 0x2D
 #define VK_DELETE 0x2E
 #define VK_NUMPAD0 0x60
+#define VK_NUMPAD2 0x62
+#define VK_NUMPAD4 0x64
+#define VK_NUMPAD6 0x66
+#define VK_NUMPAD8 0x68
 #define VK_MULTIPLY 0x6A
 #define VK_ADD 0x6B
 #define VK_SUBTRACT 0x6D
@@ -543,6 +561,7 @@ HWND GetForegroundWindow(void);
 #define WS_EX_NOACTIVATE 0x08000000
 static inline LONG_PTR GetWindowLongPtrA(HWND w, int i) { (void)w, (void)i; return 0; }
 /* (the Insert menu's Fullscreen row, gpu/vk/vk_menu.cpp: WM_APP + 7 to the window sets it, GWL_STYLE without WS_CAPTION reads it) */
+#define WM_CLOSE 0x0010
 #define WM_APP 0x8000
 #define WS_CAPTION 0x00C00000L
 BOOL PostMessageA(HWND w, UINT msg, WPARAM wp, LPARAM lp);
@@ -560,55 +579,29 @@ int MessageBoxA(HWND w, LPCSTR text, LPCSTR caption, UINT type);
 #define MB_ICONWARNING 0x00000030L
 #endif
 
-/* ---- GDI: the Insert menu's text into a 32-bit bitmap (gdi_posix.c) ---- */
-#define BI_RGB 0
-#define DIB_RGB_COLORS 0
-#define TRANSPARENT 1
-#define OPAQUE 2
-#define TA_LEFT 0
-#define TA_RIGHT 2
-#define TA_CENTER 6
-#define TA_TOP 0
-#define TA_BOTTOM 8
-#define TA_BASELINE 24
-#define FW_NORMAL 400
-#define FW_MEDIUM 500
-#define FW_SEMIBOLD 600
-#define FW_BOLD 700
-#define DEFAULT_CHARSET 1
-#define OUT_DEFAULT_PRECIS 0
-#define CLIP_DEFAULT_PRECIS 0
-#define DEFAULT_QUALITY 0
-#define NONANTIALIASED_QUALITY 3
-#define ANTIALIASED_QUALITY 4
-#define CLEARTYPE_QUALITY 5
-#define DEFAULT_PITCH 0
+/* ---- (Hookshot) calls the performance overlay, the capture pre-copy and the replay workers make: /proc and clock_gettime ---- */
+static inline void GetSystemTimePreciseAsFileTime(FILETIME *ft) { GetSystemTimeAsFileTime(ft); }   /* (already clock_gettime) */
+BOOL SetWaitableTimer(HANDLE t, const LARGE_INTEGER *due, LONG period, void *fn, void *arg, BOOL resume);
+HANDLE CreateEventW(void *attr, BOOL manual, BOOL initial, LPCWSTR name);
+/* (kernel includes idle, as on Windows; from /proc/stat) */
+BOOL GetSystemTimes(FILETIME *idle, FILETIME *kernel, FILETIME *user);
+/* (this process only: getrusage, the start time from /proc/self/stat) */
+BOOL GetProcessTimes(HANDLE p, FILETIME *create, FILETIME *exit, FILETIME *kernel, FILETIME *user);
+/* (a hint on Windows; none here: -1, as when it fails) */
+static inline DWORD SetThreadIdealProcessor(HANDLE t, DWORD cpu) { (void)t, (void)cpu; return (DWORD)-1; }
+/* (no Windows heaps: none listed, nothing summed) */
+static inline DWORD GetProcessHeaps(DWORD n, HANDLE *heaps) { (void)n, (void)heaps; return 0; }
 typedef struct {
-    DWORD biSize;
-    LONG biWidth, biHeight;
-    WORD biPlanes, biBitCount;
-    DWORD biCompression, biSizeImage;
-    LONG biXPelsPerMeter, biYPelsPerMeter;
-    DWORD biClrUsed, biClrImportant;
-} BITMAPINFOHEADER;
-typedef struct { BYTE rgbBlue, rgbGreen, rgbRed, rgbReserved; } RGBQUAD;
-typedef struct { BITMAPINFOHEADER bmiHeader; RGBQUAD bmiColors[1]; } BITMAPINFO;
-HDC CreateCompatibleDC(HDC dc);
-BOOL DeleteDC(HDC dc);
-HBITMAP CreateDIBSection(HDC dc, const BITMAPINFO *bi, UINT usage, void **bits, HANDLE section, DWORD offset);
-HGDIOBJ SelectObject(HDC dc, HGDIOBJ obj);
-BOOL DeleteObject(HGDIOBJ obj);
-BOOL GdiFlush(void);
-HFONT CreateFontA(int height, int width, int escapement, int orientation, int weight, DWORD italic, DWORD underline,
-                  DWORD strikeout, DWORD charset, DWORD out_precision, DWORD clip_precision, DWORD quality, DWORD pitch,
-                  LPCSTR face);
-HBRUSH CreateSolidBrush(COLORREF c);
-int FillRect(HDC dc, const RECT *r, HBRUSH b);
-int SetBkMode(HDC dc, int mode);
-COLORREF SetTextColor(HDC dc, COLORREF c);
-UINT SetTextAlign(HDC dc, UINT align);
-BOOL TextOutA(HDC dc, int x, int y, LPCSTR s, int n);
-BOOL GetTextExtentPoint32A(HDC dc, LPCSTR s, int n, SIZE *size);
+    DWORD dwLength, dwMemoryLoad;
+    DWORDLONG ullTotalPhys, ullAvailPhys, ullTotalPageFile, ullAvailPageFile, ullTotalVirtual, ullAvailVirtual, ullAvailExtendedVirtual;
+} MEMORYSTATUSEX;
+/* (/proc/meminfo: MemTotal, MemAvailable, swap) */
+BOOL GlobalMemoryStatusEx(MEMORYSTATUSEX *ms);
+typedef LONG LSTATUS;
+#define HKEY_LOCAL_MACHINE ((HKEY)(ULONG_PTR)0x80000002)
+#define RRF_RT_REG_SZ 0x00000002
+/* (one value only: the CPU's name, ProcessorNameString, from /proc/cpuinfo's model name; any other is not found) */
+LSTATUS RegGetValueA(HKEY key, LPCSTR sub, LPCSTR value, DWORD flags, DWORD *type, void *data, DWORD *size);
 
 #ifdef __cplusplus
 }

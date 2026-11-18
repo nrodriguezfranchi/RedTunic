@@ -1,7 +1,7 @@
-// (relink) The item wheel, Twilight Princess style: host/oot_wheel.c's state (the page's 8 slots, the equipped
+// (hookshot) The item wheel, Twilight Princess style: host/oot_wheel.c's state (the page's 8 slots, the equipped
 // item, the stick's pick, the item being moved) drawn here, on the CPU, into a picture of the game's picture's size.
 // vk_framegen.cpp framegen_wheel_backdrop lays it over the scene, blurred and dimmed (the game's own item row and HUD gone).
-// ReLink's menu is drawn with GDI, with no UI library: this draws its shapes itself, anti-aliased by their
+// Hookshot's menu is drawn with GDI, with no UI library: this draws its shapes itself, anti-aliased by their
 // distance to each pixel, and its text with GDI (white on black, the letters' coverage).
 //
 // The game's own icons and names, made from the player's RomFS at every build (nx2/wheel_assets.py, nx2/wheel_names.py) into
@@ -514,7 +514,7 @@ bool wheel_update(bool* changed) {
             now = copy;
             shown = copy.open && copy.count > 0;
             // (HOS_WHEEL_TRACE: how long after the host opened the row the wheel is first drawn, and with how many items)
-            static const bool trace = getenv("HOS_WHEEL_TRACE") != nullptr;
+            static const bool trace = env_on("HOS_WHEEL_TRACE");
             static std::chrono::steady_clock::time_point open_seen{};
             static bool told = false;
             if (trace) {
@@ -701,7 +701,7 @@ bool wheel_picture(uint32_t pw, uint32_t ph, WheelPicture* out) {
         canvas.reset(w, h);
         draw(canvas, mx - left, my - top, u, (float)pw);
         static int traced = 0;   // (HOS_WHEEL_TRACE: the first drawings' cost on the present's thread)
-        if (traced < 6 && getenv("HOS_WHEEL_TRACE"))
+        if (traced < 6 && env_on("HOS_WHEEL_TRACE"))
             traced++, logf("wheel: picture %dx%d drawn in %d ms", w, h,
                            (int)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count());
         out8.resize((size_t)w * h * 4);

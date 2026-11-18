@@ -1,4 +1,4 @@
-"""(relink) The item wheel's assets, made from the player's own RomFS at the end of every build (nx2/make_game.py), into
+"""(hookshot) The item wheel's assets, made from the player's own RomFS at the end of every build (nx2/make_game.py), into
 <game folder>/wheel/: the game's item icons (icons.bin), the items' names in each of the game's languages (names.bin,
 nx2/wheel_names.py) and the item row's sounds (sounds.bin, nx2/wheel_sounds.py). Nothing of the game is in this repository.
 With only the Python the builder ships (zstandard): the icons keep the game's own ASTC blocks, decoded by the renderer

@@ -1,9 +1,9 @@
-"""The game's icon: an .ico and a .res the game's exe links in (nx2/build.py), in the work folder.
+"""The app icon from a picture: an .ico for the builder and a .res the game's exe links in (nx2/build.py).
 
-    python nx2/make_icon.py <picture.png or icon.ico> [out folder, default work]
+    python nx2/make_icon.py <picture.png> [out folder, default work]
 
-An .ico whose frames are PNG (launcher/app.ico, the project's own icon) is used as it is: nothing else is needed.
-A picture (.png ...) is resized to each size, which needs Pillow.
+The picture is the user's and stays out of the repository, so these go to work/. Needs Pillow. The builder makes the game's
+own (its icon, and the name Windows shows for the exe) with the same functions: nx2/game_title.py.
 """
 import io
 import os
@@ -13,41 +13,25 @@ import sys
 SIZES = (16, 24, 32, 48, 64, 128, 256)
 
 
-def from_ico(path):
-    """[(size, PNG bytes)] of an .ico whose frames are PNG, smallest first"""
-    with open(path, "rb") as f:
-        data = f.read()
-    reserved, kind, count = struct.unpack_from("<HHH", data, 0)
-    if reserved != 0 or kind != 1:
-        sys.exit("%s is not an .ico" % path)
-    images = []
-    for i in range(count):
-        w, _, _, _, _, _, size, offset = struct.unpack_from("<BBBBHHII", data, 6 + 16 * i)
-        frame = data[offset:offset + size]
-        if frame[:8] != b"\x89PNG\r\n\x1a\n":
-            sys.exit("%s: frame %d is not PNG" % (path, i + 1))
-        images.append((w or 256, frame))
-    return sorted(images)
+def square(im, size):
+    """fitted in a transparent square, not stretched"""
+    from PIL import Image
+    im = im.convert("RGBA")
+    k = size / max(im.size)
+    fit = im.resize((max(1, round(im.width * k)), max(1, round(im.height * k))), Image.LANCZOS)
+    out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    out.paste(fit, ((size - fit.width) // 2, (size - fit.height) // 2), fit)
+    return out
 
 
-def from_picture(path):
-    from PIL import Image   # (only this way in needs Pillow)
+def png_of(im):
+    b = io.BytesIO()
+    im.save(b, "PNG", optimize=True)
+    return b.getvalue()
 
-    def square(im, size):
-        """fitted in a transparent square, not stretched"""
-        im = im.convert("RGBA")
-        k = size / max(im.size)
-        fit = im.resize((max(1, round(im.width * k)), max(1, round(im.height * k))), Image.LANCZOS)
-        out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-        out.paste(fit, ((size - fit.width) // 2, (size - fit.height) // 2), fit)
-        return out
 
-    def png_of(im):
-        b = io.BytesIO()
-        im.save(b, "PNG", optimize=True)
-        return b.getvalue()
-
-    im = Image.open(path)
+def images_of(im):
+    """[(size, PNG bytes)] at each of SIZES"""
     return [(s, png_of(square(im, s))) for s in SIZES]
 
 
@@ -57,29 +41,80 @@ def res_entry(kind, name, data, flags=0x1010):
     return header + data + b"\0" * (-len(data) & 3)
 
 
-def main():
-    src = sys.argv[1]
-    out = sys.argv[2] if len(sys.argv) > 2 else os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "work")
-    os.makedirs(out, exist_ok=True)
-    images = from_ico(src) if src.lower().endswith(".ico") else from_picture(src)
-
+def ico_of(images):
     head = struct.pack("<HHH", 0, 1, len(images))
     offset = len(head) + 16 * len(images)
     entries, body = b"", b""
-    group = head
-    for i, (s, data) in enumerate(images):
+    for s, data in images:
         b = s & 255
         entries += struct.pack("<BBBBHHII", b, b, 0, 0, 1, 32, len(data), offset + len(body))
-        group += struct.pack("<BBBBHHIH", b, b, 0, 0, 1, 32, len(data), i + 1)
         body += data
-    with open(os.path.join(out, "relink.ico"), "wb") as f:
-        f.write(head + entries + body)
+    return head + entries + body
 
-    res = res_entry(0, 0, b"", 0)   # (a .res file starts with an empty entry)
+
+def images_from_ico(data):
+    """Recover the embedded square PNGs from an ICO made by ico_of."""
+    _, _, count = struct.unpack_from("<HHH", data)
+    images = []
+    for index in range(count):
+        size, _, _, _, _, _, length, offset = struct.unpack_from("<BBBBHHII", data, 6 + index * 16)
+        images.append((size or 256, data[offset:offset + length]))
+    return images
+
+def icon_entries(images):
+    """RT_ICON and RT_GROUP_ICON entries of a .res: group 1, what the window class loads (host/display.c)"""
+    group = struct.pack("<HHH", 0, 1, len(images))
+    res = b""
     for i, (s, data) in enumerate(images):
+        b = s & 255
+        group += struct.pack("<BBBBHHIH", b, b, 0, 0, 1, 32, len(data), i + 1)
         res += res_entry(3, i + 1, data)   # RT_ICON
-    res += res_entry(14, 1, group, 0x1030)   # RT_GROUP_ICON: resource 1, what the window class loads
-    with open(os.path.join(out, "relink.res"), "wb") as f:
+    return res + res_entry(14, 1, group, 0x1030)   # RT_GROUP_ICON
+
+
+def _node(key, value=b"", text=False, children=()):
+    """one VS_VERSIONINFO node: wLength, wValueLength (in WCHARs for text), wType, key, value, children, each 4-aligned"""
+    body = key.encode("utf-16-le") + b"\0\0"
+    body += b"\0" * (-(6 + len(body)) & 3)
+    body += value
+    for child in children:
+        body += b"\0" * (-(6 + len(body)) & 3)
+        body += child
+    count = len(value) // 2 if text else len(value)
+    return struct.pack("<HHH", 6 + len(body), count, 1 if text else 0) + body
+
+
+def version_entry(strings, version=(0, 0, 0, 0)):
+    """RT_VERSION 1: what Windows shows for the exe (Task Manager, the taskbar, its Properties): strings {name: text}"""
+    major, minor, patch, build = version
+    high, low = (major << 16) | minor, (patch << 16) | build
+    fixed = struct.pack("<13I", 0xFEEF04BD, 0x00010000, high, low, high, low, 0x3F, 0, 0x00040004, 1, 0, 0, 0)
+    table = [_node(k, v.encode("utf-16-le") + b"\0\0", True) for k, v in strings.items()]
+    info = _node("VS_VERSION_INFO", fixed, children=[
+        _node("StringFileInfo", text=True, children=[_node("040904b0", text=True, children=table)]),
+        _node("VarFileInfo", text=True, children=[_node("Translation", struct.pack("<HH", 0x0409, 1200))])])
+    return res_entry(16, 1, info, 0x0030)
+
+
+def res_of(images=(), strings=None, version=(0, 0, 0, 0)):
+    """a .res: the icon (images_of's), and the version strings when given"""
+    res = res_entry(0, 0, b"", 0)   # (a .res file starts with an empty entry)
+    if images:
+        res += icon_entries(images)
+    if strings:
+        res += version_entry(strings, version)
+    return res
+
+
+def main():
+    from PIL import Image
+    src = sys.argv[1]
+    out = sys.argv[2] if len(sys.argv) > 2 else os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "work")
+    images = images_of(Image.open(src))
+    with open(os.path.join(out, "hookshot.ico"), "wb") as f:
+        f.write(ico_of(images))
+    res = res_of(images)
+    with open(os.path.join(out, "hookshot.res"), "wb") as f:
         f.write(res)
     print("make_icon: %d sizes, %d KB" % (len(images), len(res) >> 10))
 

@@ -1,41 +1,36 @@
-"""What the release workflows need from earlier releases, and the ReLink package folder made in CI
-(.github/workflows/windows.yml). No game data is involved: the parts hold the builder, its tools
+"""What the release workflows need from earlier releases, and the Hookshot Builder package folder made in CI
+(.github/workflows/windows-builder.yml, linux-appimage.yml). No game data is involved: the parts hold the builder, its tools
 and the play profile (addresses and counts made on the development PC).
 
-    python -I scripts/release_parts.py previous <out list> --repo <owner/name> [--repo ...] [--skip-tag <tag>] [--seed <name>]
-        the newest stable release's relink-setup.txt (of the first repository that has one; not --skip-tag's, the release
-        being made); prints that release's tag. Exits 1 when no repository has one. --seed: the list of that name in the
-        first repository's builder-parts release wins when it is there (scripts/make_seed.py: the maintainer's own parts)
-    python -I scripts/release_parts.py adopt <setup list> <new list> <out folder> --base <url>
-        the list's Python, emsdk, CPM and wgpu-native parts repacked under this project's name into <out folder>, and the
-        list written again with them (a first release has no parts of its own: it starts from another release's)
+    python -I scripts/release_parts.py previous <out list> --repo <owner/name> [--repo ...] [--skip-tag <tag>]
+        the newest stable release's hookshot-setup.txt (of the first repository that has one; not --skip-tag's, the release
+        being made); prints that release's tag. Exits 1 when no repository has one.
     python -I scripts/release_parts.py profile <setup list> <work folder>
-        the play profile (tools/work of the list's profile part, or of its app part) into <work folder>
+        the play profile (tools/work of the list's app part) into <work folder>
     python -I scripts/release_parts.py llvm-mingw <folder> [--name]
         llvm-mingw as scripts/make_setup_parts.py names it (its official release, SHA-256 checked) unpacked into <folder>;
         prints its folder. --name: only prints its name (a cache key)
     python -I scripts/release_parts.py package <out folder> --publish <dotnet publish folder> --setup <setup exe>
-                                       [--list <setup list>]
-        the package folder make_setup_parts.py splits: the published launcher, the setup, LICENSE, the tracked assets, gpu, host, nx2
-        and scripts under tools/, tools/work (the profile) and tools/third_party: the tracked files and, from the list's
+                                       [--list <setup list>] [--python-packages <requirements>] [--cpm-add <CPM folder>]
+        the package folder make_setup_parts.py splits: the published builder, the setup, LICENSE, the tracked gpu, host, nx2
+        and scripts under tools/, the pipeline state list's sources (assets/pipeline_states/, which must be there and read),
+        tools/work (the profile) and tools/third_party: the tracked files and, from the list's
         third_party part, the prebuilt files the repository does not carry (a64emit.dll, lld-link.exe, SDL2.dll, SDL3.dll,
         zbic.dll; rebuilt on the player's PC when their sources' stamps differ). Python, emsdk, CPM and wgpu-native are not
-        in it: make_setup_parts.py --reuse takes their parts from the list.
-    python -I scripts/release_parts.py zip <setup list> <out zip> [--parts <folder>] [--add recomplauncher.json]
-        all the list's parts in one zip, as the setup lays them out (ReLink.exe at the top), with the --add files beside it:
-        the release's ProjectReLink-<tag>-Windows-x64.zip, which RecompLauncher installs. --parts: a folder that already holds
-        some of the parts (checked by size and SHA-256 like the rest)
+        in it: make_setup_parts.py --reuse takes their parts from the list. --python-packages: when the list's Python part
+        lacks one of those pinned packages, the part goes into tools/python with them installed (by this Python's pip, for
+        the part's version), and make_setup_parts.py makes a new Python part of it. --cpm-add: when the list's CPM part
+        lacks one of the folder's <package>/<version> (dav1d, scripts/windows/dav1d.sh), the part goes into tools/cpm with
+        them added, and make_setup_parts.py makes a new CPM part of it
 
 GitHub's API is read with $GH_TOKEN when it is set. Downloads are retried (GitHub answers 5xx now and then). Progress goes to
 stderr: what a command prints on stdout is its answer.
 """
 import argparse
-import glob
 import hashlib
 import importlib.util
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -52,14 +47,19 @@ PREBUILT_EXT = (".dll", ".lib", ".exe", ".sha1")
 
 
 def get(url, api=False, tries=5):
-    headers = {"User-Agent": "relink-ci"}
+    if not url.startswith("https://"):   # (only https: the token is never sent over plain http, nor a file: link read)
+        raise ValueError("not an https link: " + url)
+    headers = {"User-Agent": "hookshot-ci"}
+    token = None
     if api:
         headers["Accept"] = "application/vnd.github+json"
-        if os.environ.get("GH_TOKEN"):
-            headers["Authorization"] = "Bearer " + os.environ["GH_TOKEN"]
+        token = os.environ.get("GH_TOKEN")
     for i in range(tries):
         try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=120) as r:
+            req = urllib.request.Request(url, headers=headers)
+            if token:   # (not sent again on a redirect, which may lead to another host: urllib copies plain headers)
+                req.add_unredirected_header("Authorization", "Bearer " + token)
+            with urllib.request.urlopen(req, timeout=120) as r:
                 return r.read()
         except urllib.error.HTTPError as e:
             if e.code < 500 or i == tries - 1:
@@ -72,19 +72,6 @@ def get(url, api=False, tries=5):
 
 
 def previous(a):
-    if a.seed:
-        try:
-            parts = json.loads(get("https://api.github.com/repos/%s/releases/tags/builder-parts" % a.repo[0], api=True))
-            url = next((x["browser_download_url"] for x in parts["assets"] if x["name"] == a.seed), None)
-        except urllib.error.HTTPError as e:
-            print("%s: builder-parts: %s" % (a.repo[0], e), file=sys.stderr)
-            url = None
-        if url:
-            with open(a.out, "wb") as f:
-                f.write(get(url))
-            print("seed")
-            return 0
-        print("no %s in %s's builder-parts release: the releases' lists instead" % (a.seed, a.repo[0]), file=sys.stderr)
     for repo in a.repo:
         try:
             releases = json.loads(get("https://api.github.com/repos/%s/releases?per_page=30" % repo, api=True))
@@ -94,13 +81,13 @@ def previous(a):
         for r in releases:
             if r["draft"] or r["prerelease"] or r["tag_name"] == a.skip_tag:
                 continue
-            url = next((x["browser_download_url"] for x in r["assets"] if x["name"] in a.list_name), None)
+            url = next((x["browser_download_url"] for x in r["assets"] if x["name"] == "hookshot-setup.txt"), None)
             if url:
                 with open(a.out, "wb") as f:
                     f.write(get(url))
                 print(r["tag_name"])
                 return 0
-    print("no release with a %s in %s" % (" or ".join(a.list_name), ", ".join(a.repo)), file=sys.stderr)
+    print("no release with a hookshot-setup.txt in %s" % ", ".join(a.repo), file=sys.stderr)
     return 1
 
 
@@ -132,74 +119,15 @@ def sha256(path):
     return h.hexdigest()
 
 
-def part_name(url):
-    """python, emsdk, app ...: the middle of <prefix>-<name>-<start of its SHA-256>.zip (the prefix is whatever the release
-    that made the part called itself)"""
-    base = url.rsplit("/", 1)[-1]
-    return base.split("-", 1)[1].rsplit("-", 1)[0] if base.count("-") >= 2 else ""
-
-
 def named_part(list_path, name):
     for w in part_lines(list_path):
-        if len(w) == 7 and part_name(w[6]) == name:
+        if w[6].rsplit("/", 1)[-1].startswith("HookshotBuilder-%s-" % name):
             return fetch_part(w[1], int(w[2]), w[6])
     return None
 
 
-def top_folder(zip_path):
-    """The one folder a part's files are under"""
-    with zipfile.ZipFile(zip_path) as z:
-        return z.namelist()[0].split("/", 1)[0]
-
-
-def repack(src, dst, top):
-    """src's files under another top folder, as deterministic as make_setup_parts.py's zips; (sha256, size)"""
-    with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst + ".new", "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zout:
-        for m in sorted(zin.infolist(), key=lambda m: m.filename):
-            if m.is_dir() or "/" not in m.filename:
-                continue
-            info = zipfile.ZipInfo(top + "/" + m.filename.split("/", 1)[1], date_time=(2026, 1, 1, 0, 0, 0))
-            info.compress_type = zipfile.ZIP_DEFLATED
-            info.external_attr = 0o644 << 16
-            zout.writestr(info, zin.read(m), compresslevel=6)
-    os.replace(dst + ".new", dst)
-    return sha256(dst), os.path.getsize(dst)
-
-
-# (the tools a package made in CI does not make itself: make_setup_parts.py --reuse takes their parts from the list)
-MIRRORED = ("python", "emsdk", "cpm", "wgpu-native")
-
-
-def adopt(a):
-    """A list whose tool parts were made under another name: each of them downloaded, repacked under ReLink/ and written to
-    <out folder> as ReLink-<name>-<sha>.zip (to upload to this repository's builder-parts release), and the list written again
-    with those. The other lines stay: the app and third_party parts are only read here (the play profile, the prebuilt files)."""
-    os.makedirs(a.out, exist_ok=True)
-    with open(a.list, encoding="utf-8") as f:
-        lines = f.read().splitlines()
-    out_lines, n = [], 0
-    for line in lines:
-        w = line.split()
-        if len(w) == 7 and w[0] == "part":
-            base, name = w[6].rsplit("/", 1)[-1], part_name(w[6])
-            if name in MIRRORED and not base.startswith("ReLink-"):
-                src = fetch_part(w[1], int(w[2]), w[6])
-                tmp = os.path.join(a.out, "ReLink-%s.zip" % name)
-                sha, size = repack(src, tmp, "ReLink")
-                named = os.path.join(a.out, "ReLink-%s-%s.zip" % (name, sha[:12]))
-                os.replace(tmp, named)
-                line = "part %s %d %s %s %s %s/%s" % (sha, size, w[3], w[4], w[5], a.base.rstrip("/"), os.path.basename(named))
-                print("%-12s %5d MB  %s" % (name, size >> 20, sha[:16]), file=sys.stderr, flush=True)
-                n += 1
-        out_lines.append(line)
-    with open(a.new_list, "w", encoding="utf-8", newline="\n") as f:
-        f.write("\n".join(out_lines) + "\n")
-    print("%d parts adopted" % n)
-    return 0
-
-
 def extract(zip_path, prefix, dest, keep=lambda rel: True):
-    """The zip's members under prefix (ReLink/...), into dest without that prefix; how many"""
+    """The zip's members under prefix (HookshotBuilder/...), into dest without that prefix; how many"""
     n = 0
     with zipfile.ZipFile(zip_path) as z:
         for m in z.infolist():
@@ -209,6 +137,10 @@ def extract(zip_path, prefix, dest, keep=lambda rel: True):
             if ".." in rel.split("/") or not keep(rel):
                 continue
             out = os.path.join(dest, *rel.split("/"))
+            # (a name with a drive or a root, such as "C:/x" on Windows, would leave dest: such members are skipped)
+            root = os.path.realpath(dest)
+            if os.path.commonpath([os.path.realpath(out), root]) != root:
+                continue
             os.makedirs(os.path.dirname(out), exist_ok=True)
             with z.open(m) as src, open(out, "wb") as f:
                 shutil.copyfileobj(src, f)
@@ -216,33 +148,12 @@ def extract(zip_path, prefix, dest, keep=lambda rel: True):
     return n
 
 
-def start_lists(work):
-    """What a play profile folder gives a player's first start (nx2/make_game.py installs both beside the game): the pipeline
-    state list (pipeline_states.bin, 528-byte records after a 12-byte head) and the compute list (computes.bin, 8 bytes a
-    program); one line. Exits when computes.bin is not a list of 8-byte keys"""
-    said = []
-    states = os.path.join(work, "pipeline_states.bin")
-    said.append("pipeline_states.bin: %d pipelines" % ((os.path.getsize(states) - 12) // 528) if os.path.isfile(states)
-                else "no pipeline_states.bin: a first start builds no graphics pipeline before the title")
-    computes = os.path.join(work, "computes.bin")
-    if os.path.isfile(computes):
-        if os.path.getsize(computes) % 8:
-            sys.exit("%s: %d bytes, not a list of 8-byte keys (a played game folder's relink_computes.bin)"
-                     % (computes, os.path.getsize(computes)))
-        said.append("computes.bin: %d compute programs" % (os.path.getsize(computes) // 8))
-    else:
-        said.append("no computes.bin: a new install builds its compute pipelines in play")
-    return "; ".join(said)
-
-
 def profile(a):
-    # (a seed has the profile as a part of its own; a release's list has it in its app part. Every file of its tools/work is
-    # taken, the first start's lists among them: start_lists)
-    app = named_part(a.list, "profile") or named_part(a.list, "app")
+    app = named_part(a.list, "app")
     if not app:
-        sys.exit("no profile or app part in %s" % a.list)
-    n = extract(app, top_folder(app) + "/tools/work/", a.work)
-    print("%d profile files into %s (%s)" % (n, a.work, start_lists(a.work)))
+        sys.exit("no app part in %s" % a.list)
+    n = extract(app, "HookshotBuilder/tools/work/", a.work)
+    print("%d profile files into %s" % (n, a.work))
     return 0
 
 
@@ -267,101 +178,6 @@ def llvm_mingw(a):
     return 0
 
 
-# SDL, for the controllers that are not Xbox pads (host/pad_sdl.c: Switch Pro, DualSense, DualShock 4 ...) and the
-# microphones: SDL2.dll (sdl2-compat, the SDL2 calls on SDL3) and the SDL3.dll it loads, beside the game (nx2/build.py copies
-# them from third_party/sdl2). The repository carries no binaries and the parts took them from the release before; the seed
-# this project's releases started from had none, so v0.6.1 shipped without them and a Switch Pro Controller did nothing in
-# the game (issue 3; the game's log said "no SDL beside the exe or on the system: only XInput controllers (Xbox pads) work").
-# Taken here from SDL's own releases, the versions third_party/sdl2/VERSION.txt names, by the size and SHA-256 GitHub
-# publishes for each archive: (file in the archive, SHA-256 of the archive, its size, its address)
-SDL = (
-    ("SDL3.dll", "368bed8b24e44ad9ea372990814f2343fcfb9e468abb7f8f4a3bc146c7304752", 1166032,
-     "https://github.com/libsdl-org/SDL/releases/download/release-3.4.20/SDL3-3.4.20-win32-x64.zip"),
-    ("SDL2.dll", "94a0184bc2d0670151a023656fb58e8f722fc001bda3a6a424234c88c5501cc0", 1273703,
-     "https://github.com/libsdl-org/sdl2-compat/releases/download/release-2.32.74/sdl2-compat-2.32.74-win32-x64.zip"),
-)
-
-
-def sdl_libraries(dest):
-    """SDL2.dll and SDL3.dll into dest (tools/third_party/sdl2) where they are not there already; how many were added"""
-    n = 0
-    for name, sha, size, url in SDL:
-        out = os.path.join(dest, name)
-        if os.path.isfile(out):   # (the release before had it: the third_party part's prebuilt files)
-            continue
-        with zipfile.ZipFile(fetch_part(sha, size, url)) as z:
-            member = next((m for m in z.namelist() if m.rsplit("/", 1)[-1] == name), None)
-            if not member:
-                sys.exit("%s: no %s in it" % (url, name))
-            data = z.read(member)
-        os.makedirs(dest, exist_ok=True)
-        with open(out, "wb") as f:
-            f.write(data)
-        print("%s (%d KB) from %s" % (name, len(data) >> 10, url.rsplit("/", 1)[-1]))
-        n += 1
-    return n
-
-
-# (relink, 0.7) AMD FidelityFX Super Resolution 3.1 (gpu/vk/vk_dlss.cpp's FSR choice): AMD's prebuilt, signed Vulkan library from
-# the FidelityFX SDK v1.1.4 (MIT), with its license, beside the game (nx2/build.py copies them from third_party/ffx). Taken here
-# from AMD's own repository by size and SHA-256, as the SDL files above: (file, SHA-256, size, address)
-FFX = (
-    ("amd_fidelityfx_vk.dll", "a1624cc4238fef046f30c4d80ce3f47be63fc5f5373f49e3ee9edb9960f54c78", 9332432,
-     "https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/v1.1.4/PrebuiltSignedDLL/amd_fidelityfx_vk.dll"),
-    ("LICENSE-FidelityFX.txt", "82cf74fc23885107c7f69249ac3f1dac55898ff68320eb2c753984cae6b2d78a", 1115,
-     "https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/v1.1.4/LICENSE.txt"),
-)
-
-
-def ffx_library(dest):
-    """AMD's FSR library and its license into dest (tools/third_party/ffx) where they are not there already; how many were added"""
-    n = 0
-    for name, sha, size, url in FFX:
-        out = os.path.join(dest, name)
-        if os.path.isfile(out) and os.path.getsize(out) == size and sha256(out) == sha:
-            continue
-        os.makedirs(dest, exist_ok=True)
-        shutil.copyfile(fetch_part(sha, size, url), out)
-        print("%s (%d KB) from AMD's FidelityFX SDK v1.1.4" % (name, size >> 10))
-        n += 1
-    return n
-
-
-def vc_runtime(dest):
-    """Microsoft's Visual C++ 2015-2022 runtime (msvcp140, vcruntime140, vcruntime140_1), which AMD's FSR library imports, into
-    dest (tools/third_party/ffx/vcrt) from the newest Visual Studio's Redist folder on this machine (the CI runner has one):
-    the files Microsoft provides for an application to carry beside itself. The game takes them only on a PC without the
-    runtime (gpu/vk/vk_fsr.cpp). How many were added; none, said, where no Visual Studio is found"""
-    if os.name != "nt":
-        return 0
-    names = ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")
-    vswhere = os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Microsoft Visual Studio", "Installer", "vswhere.exe")
-    roots = []
-    if os.path.isfile(vswhere):
-        r = subprocess.run([vswhere, "-all", "-products", "*", "-property", "installationPath"], capture_output=True, text=True)
-        roots = [l.strip() for l in r.stdout.splitlines() if l.strip()]
-    found = []
-    for root in roots:
-        for crt in glob.glob(os.path.join(root, "VC", "Redist", "MSVC", "*", "x64", "Microsoft.VC14*.CRT")):
-            if all(os.path.isfile(os.path.join(crt, n)) for n in names):
-                ver = tuple(int(p) for p in re.findall(r"\d+", os.path.basename(os.path.dirname(os.path.dirname(crt)))))
-                found.append((ver, crt))
-    if not found:
-        print("no Visual Studio Redist folder here: the package has no Visual C++ runtime for AMD's FSR library")
-        return 0
-    crt = max(found)[1]
-    os.makedirs(dest, exist_ok=True)
-    n = 0
-    for name in names:
-        out = os.path.join(dest, name)
-        if os.path.isfile(out) and os.path.getsize(out) == os.path.getsize(os.path.join(crt, name)):
-            continue
-        shutil.copyfile(os.path.join(crt, name), out)
-        n += 1
-    print("Visual C++ runtime (%d files) from %s" % (n, crt))
-    return n
-
-
 def tracked(*paths):
     r = subprocess.run(["git", "ls-files", "-z", "--"] + list(paths), cwd=ROOT, check=True, stdout=subprocess.PIPE)
     return [f for f in r.stdout.decode("utf-8").split("\0") if f]
@@ -377,12 +193,12 @@ def package(a):
     if os.path.exists(out):
         shutil.rmtree(out)
     shutil.copytree(a.publish, out)
-    copy(a.setup, os.path.join(out, "ReLink-Setup.exe"))   # (the builder's Repair runs it)
+    copy(a.setup, os.path.join(out, "HookshotBuilder-Setup.exe"))   # (the builder's Repair runs it)
     copy(os.path.join(ROOT, "LICENSE"), os.path.join(out, "LICENSE"))
-    copy(os.path.join(ROOT, "NOTICE.md"), os.path.join(out, "NOTICE.md"))   # (the copyright notices)
     tools = os.path.join(out, "tools")
-    # (tools: dump_check.py and dump_repair.py, which make_game.py runs on the player's dump, issue 14)
-    for f in tracked("assets", "gpu", "host", "nx2", "scripts", "third_party", "tools"):
+    for icon in ("red-tunic.png", "red-tunic.ico"):
+        copy(os.path.join(ROOT, "assets", icon), os.path.join(tools, "assets", icon))
+    for f in tracked("gpu", "host", "native", "nx2", "scripts", "third_party"):
         copy(os.path.join(ROOT, f), os.path.join(tools, *f.split("/")))
     if a.list:
         if not profile(argparse.Namespace(list=a.list, work=os.path.join(tools, "work"))) == 0:
@@ -391,62 +207,91 @@ def package(a):
         if tp:
             known = set(tracked("third_party"))
             prebuilt = lambda rel: rel.startswith("third_party/") and rel not in known and rel.lower().endswith(PREBUILT_EXT)
-            n = extract(tp, top_folder(tp) + "/tools/", tools, keep=prebuilt)
+            n = extract(tp, "HookshotBuilder/tools/", tools, keep=prebuilt)
             print("%d prebuilt third_party files from %s" % (n, os.path.basename(tp)))
+        if a.python_packages and python_packages(a.list, a.python_packages, tools) != 0:
+            return 1
+        if a.cpm_add and cpm_add(a.list, a.cpm_add, tools) != 0:
+            return 1
     else:
         print("no setup list: the package has no play profile and no prebuilt third_party files")
-    sdl_libraries(os.path.join(tools, "third_party", "sdl2"))
-    ffx_library(os.path.join(tools, "third_party", "ffx"))
-    vc_runtime(os.path.join(tools, "third_party", "ffx", "vcrt"))
+    if state_list(tools) != 0:
+        return 1
     print("package folder: %s" % out)
     return 0
 
 
-def full_zip(a):
-    """Every part of a setup list in one zip, laid out as the setup installs them (its ReLink folder at the top of the zip), with
-    recomplauncher.json beside ReLink.exe: the release file RecompLauncher installs from"""
-    names, seen = [], set()
-    for w in part_lines(a.list):
-        if len(w) != 7:
-            sys.exit("%s: a part line that is not 'part <sha> <bytes> <folder> <top> <new name> <url>': %s" % (a.list, " ".join(w)))
-        sha, size, dest, top, new, url = w[1], int(w[2]), w[3], w[4], w[5], w[6]
-        local = os.path.join(a.parts, url.rsplit("/", 1)[-1]) if a.parts else ""
-        path = local if local and os.path.isfile(local) and os.path.getsize(local) == size and sha256(local) == sha \
-            else fetch_part(sha, size, url)
-        names.append((path, dest.strip("./"), top, new))
-    out = os.path.abspath(a.out)
-    with zipfile.ZipFile(out + ".new", "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
-        def add(name, src, length):
-            if name in seen:
-                sys.exit("%s is in two parts" % name)
-            seen.add(name)
-            info = zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0))
-            info.compress_type = zipfile.ZIP_DEFLATED
-            info.external_attr = 0o644 << 16
-            info.file_size = length
-            with z.open(info, "w") as dst:
-                shutil.copyfileobj(src, dst, 1 << 20)
-        for path, dest, top, new in names:
-            with zipfile.ZipFile(path) as part:
-                for m in part.infolist():
-                    if m.is_dir():
-                        continue
-                    rel = m.filename
-                    if top != "-":
-                        if rel.split("/", 1)[0] != top:
-                            sys.exit("%s: %s is not under %s" % (path, rel, top))
-                        rel = new + rel[len(top):]
-                    rel = (dest + "/" + rel) if dest else rel
-                    if not rel.startswith("ReLink/") or ".." in rel.split("/"):
-                        sys.exit("%s: %s is not inside the ReLink folder" % (path, rel))
-                    with part.open(m) as src:
-                        add(rel[len("ReLink/"):], src, m.file_size)
-            print("%s: in" % os.path.basename(path), file=sys.stderr, flush=True)
-        for extra in a.add or []:
-            with open(extra, "rb") as src:
-                add(os.path.basename(extra), src, os.path.getsize(extra))
-    os.replace(out + ".new", out)
-    print("%s: %d files, %d MB" % (out, len(seen), os.path.getsize(out) >> 20))
+def state_list(tools):
+    """The sources of the pipeline state list a release ships (assets/pipeline_states/: the tour's list, the contributed ones and
+    their notes), into tools/ at the same path: nx2/make_game.py merges them beside the game. Required: without them a new
+    install's first field load is drawn white for seconds while its pipelines compile (v2.0.8 to v2.0.14 shipped none). 1, with
+    the reason, when there are none or one does not read (nx2/pipeline_states.py check)"""
+    spec = importlib.util.spec_from_file_location("pipeline_states", os.path.join(ROOT, "nx2", "pipeline_states.py"))
+    states = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(states)
+    src = states.sources_dir(ROOT)
+    try:
+        recs = states.check_sources(src)
+    except SystemExit as e:
+        print("error: %s" % e, file=sys.stderr)
+        return 1
+    dst = states.sources_dir(tools)
+    shutil.rmtree(dst, ignore_errors=True)
+    shutil.copytree(src, dst)
+    print("the pipeline state list: %s" % states.describe(recs))
+    return 0
+
+
+def python_packages(list_path, requirements, tools):
+    """The list's Python part with requirements' pins (name==version) installed into tools/python, if it lacks one: by this
+    Python's pip, for the part's version and win_amd64 (the part has no pip)"""
+    with open(requirements, encoding="utf-8") as f:
+        pins = [p for p in (l.split("#")[0].strip() for l in f.read().splitlines()) if p]
+    part = named_part(list_path, "python")
+    if not part:
+        sys.exit("no python part in %s" % list_path)
+    with zipfile.ZipFile(part) as z:
+        names = [m.split("/") for m in z.namelist()]
+    have = {m[-2].lower() for m in names if len(m) > 1 and m[-2].endswith(".dist-info")}
+    missing = [p for p in pins if "%s-%s.dist-info" % tuple(x.strip().lower().replace("-", "_") for x in p.split("==")) not in have]
+    if not missing:
+        print("the Python part has %s" % ", ".join(pins))
+        return 0
+    dll = [m[-1] for m in names if m[:-1] == ["HookshotBuilder", "tools", "python"] and m[-1].lower().startswith("python3")
+           and m[-1][7:-4].isdigit()]
+    if len(dll) != 1:
+        sys.exit("%s: no pythonXY.dll to give the version" % os.path.basename(part))
+    version = "3." + dll[0][7:-4]
+    py = os.path.join(tools, "python")
+    n = extract(part, "HookshotBuilder/tools/python/", py)
+    print("%d files of %s (Python %s) into %s, with %s" % (n, os.path.basename(part), version, py, ", ".join(missing)))
+    subprocess.run([sys.executable, "-m", "pip", "install", "--no-deps", "--only-binary", ":all:", "--no-compile", "--no-cache-dir",
+                    "--disable-pip-version-check", "-q", "--platform", "win_amd64", "--python-version", version,
+                    "--implementation", "cp", "--target", os.path.join(py, "Lib", "site-packages")] + missing, check=True)
+    return 0
+
+
+def cpm_add(list_path, add, tools):
+    """The list's CPM part with the packages of the CPM folder `add` (<name>/<version>/...: dav1d for the AV1 movies,
+    scripts/windows/dav1d.sh) into tools/cpm, if it lacks one of them: make_setup_parts.py then makes a new CPM part of it"""
+    want = sorted((n, v) for n in os.listdir(add) if os.path.isdir(os.path.join(add, n))
+                  for v in os.listdir(os.path.join(add, n)) if os.path.isdir(os.path.join(add, n, v)))
+    if not want:
+        sys.exit("%s: no <package>/<version> folders" % add)
+    part = named_part(list_path, "cpm")
+    if not part:
+        sys.exit("no cpm part in %s" % list_path)
+    with zipfile.ZipFile(part) as z:
+        have = {tuple(m.split("/")[3:5]) for m in z.namelist() if m.startswith("HookshotBuilder/tools/cpm/")}
+    missing = [nv for nv in want if nv not in have]
+    if not missing:
+        print("the CPM part has %s" % ", ".join("/".join(nv) for nv in want))
+        return 0
+    cpm = os.path.join(tools, "cpm")
+    n = extract(part, "HookshotBuilder/tools/cpm/", cpm)
+    for name, version in missing:
+        shutil.copytree(os.path.join(add, name, version), os.path.join(cpm, name, version))
+    print("%d files of %s into %s, with %s" % (n, os.path.basename(part), cpm, ", ".join("/".join(nv) for nv in missing)))
     return 0
 
 
@@ -457,13 +302,6 @@ def main():
     s.add_argument("out")
     s.add_argument("--repo", action="append", required=True)
     s.add_argument("--skip-tag", default="")
-    s.add_argument("--list-name", action="append", help="the list's file name in a release (default relink-setup.txt; may be given more than once)")
-    s.add_argument("--seed", default="", help="a list's file name in the first repository's builder-parts release: it wins when it is there")
-    s = sub.add_parser("adopt")
-    s.add_argument("list")
-    s.add_argument("new_list")
-    s.add_argument("out")
-    s.add_argument("--base", required=True, help="where this repository serves its parts from (its builder-parts release)")
     s = sub.add_parser("profile")
     s.add_argument("list")
     s.add_argument("work")
@@ -475,16 +313,10 @@ def main():
     s.add_argument("--publish", required=True)
     s.add_argument("--setup", required=True)
     s.add_argument("--list")
-    s = sub.add_parser("zip")
-    s.add_argument("list")
-    s.add_argument("out")
-    s.add_argument("--parts", help="a folder with the list's zips already there (the workflow's dist): not downloaded again")
-    s.add_argument("--add", action="append", help="a file put at the top of the zip (recomplauncher.json)")
+    s.add_argument("--python-packages")
+    s.add_argument("--cpm-add")
     a = p.parse_args()
-    if a.cmd == "previous":
-        a.list_name = a.list_name or ["relink-setup.txt"]
-    return {"previous": previous, "adopt": adopt, "profile": profile, "llvm-mingw": llvm_mingw, "package": package,
-            "zip": full_zip}[a.cmd](a)
+    return {"previous": previous, "profile": profile, "llvm-mingw": llvm_mingw, "package": package}[a.cmd](a)
 
 
 if __name__ == "__main__":

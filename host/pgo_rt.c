@@ -1,8 +1,12 @@
-/* (relink) Profile-guided builds (RX_PGO=gen, nx2/build.py): what clang's -fprofile-instr-generate needs, in place of compiler-rt's
+/* (hookshot) Profile-guided builds (RX_PGO=gen, nx2/build.py): what clang's -fprofile-instr-generate needs, in place of compiler-rt's
    profile library, which this toolchain lacks. The counters sit in sections .lprfc/.lprfd/.lprfn; this writes them in LLVM's raw
    format for llvm-profdata.
    HOS_PGO=<path>: every 500 ms, if <path>.reset exists the counters are cleared, and if <path>.dump exists they are written to <path>;
-   each file is deleted when done. So a run can leave out the loading. */
+   each file is deleted when done. So a run can leave out the loading.
+   The renderer module has a copy of its own (RX_VK_PGO=gen: the counters are each module's own), which reads RX_VK_PGO_FILE
+   instead (-DPGO_ENV, below).
+   On Linux the counters are in the ELF sections __llvm_prf_cnts/__llvm_prf_data/__llvm_prf_names, whose ends the linker names
+   (__start_/__stop_), and the Win32 calls below are host/posix's. */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,7 +15,7 @@
 
 int __llvm_profile_runtime = 0;
 
-#if defined(_WIN32)
+#ifdef _WIN32
 #pragma section(".lprfc$A", read, write)
 #pragma section(".lprfc$Z", read, write)
 #pragma section(".lprfd$A", read, write)
@@ -24,31 +28,29 @@ __declspec(allocate(".lprfd$A")) __attribute__((used, aligned(8))) char pgo_dat_
 __declspec(allocate(".lprfd$Z")) __attribute__((used, aligned(8))) char pgo_dat_z[72] = {0};
 __declspec(allocate(".lprfn$A")) __attribute__((used)) const char pgo_nam_a[1] = {0};
 __declspec(allocate(".lprfn$Z")) __attribute__((used)) const char pgo_nam_z[1] = {0};
-#define PGO_COUNTERS_BEGIN (pgo_cnt_a + sizeof pgo_cnt_a)
-#define PGO_COUNTERS_END pgo_cnt_z
-#define PGO_DATA_BEGIN (pgo_dat_a + sizeof pgo_dat_a)
-#define PGO_DATA_END pgo_dat_z
-#define PGO_NAMES_BEGIN (pgo_nam_a + sizeof pgo_nam_a)
-#define PGO_NAMES_END pgo_nam_z
+#define PGO_CNT_BEGIN (pgo_cnt_a + 8)
+#define PGO_CNT_END pgo_cnt_z
+#define PGO_DAT_BEGIN (pgo_dat_a + sizeof pgo_dat_a)
+#define PGO_DAT_END pgo_dat_z
+#define PGO_NAM_BEGIN (pgo_nam_a + 1)
+#define PGO_NAM_END pgo_nam_z
 #else
-/* ELF linkers synthesize these boundaries for the sections emitted by
-   -fprofile-instr-generate.  Keep the COFF sentinels above for Windows: the
-   data records have different CounterPtr relocation widths on the two ABIs. */
-extern char __start___llvm_prf_cnts[];
-extern char __stop___llvm_prf_cnts[];
-extern char __start___llvm_prf_data[];
-extern char __stop___llvm_prf_data[];
-extern char __start___llvm_prf_names[];
-extern char __stop___llvm_prf_names[];
-#define PGO_COUNTERS_BEGIN __start___llvm_prf_cnts
-#define PGO_COUNTERS_END __stop___llvm_prf_cnts
-#define PGO_DATA_BEGIN __start___llvm_prf_data
-#define PGO_DATA_END __stop___llvm_prf_data
-#define PGO_NAMES_BEGIN __start___llvm_prf_names
-#define PGO_NAMES_END __stop___llvm_prf_names
+/* (weak and hidden, as compiler-rt declares them: this module's own sections, and a module with nothing counted still links) */
+extern char __start___llvm_prf_cnts[] __attribute__((weak, visibility("hidden")));
+extern char __stop___llvm_prf_cnts[] __attribute__((weak, visibility("hidden")));
+extern char __start___llvm_prf_data[] __attribute__((weak, visibility("hidden")));
+extern char __stop___llvm_prf_data[] __attribute__((weak, visibility("hidden")));
+extern const char __start___llvm_prf_names[] __attribute__((weak, visibility("hidden")));
+extern const char __stop___llvm_prf_names[] __attribute__((weak, visibility("hidden")));
+#define PGO_CNT_BEGIN __start___llvm_prf_cnts
+#define PGO_CNT_END __stop___llvm_prf_cnts
+#define PGO_DAT_BEGIN __start___llvm_prf_data
+#define PGO_DAT_END __stop___llvm_prf_data
+#define PGO_NAM_BEGIN __start___llvm_prf_names
+#define PGO_NAM_END __stop___llvm_prf_names
 #endif
 
-/* (raw format 10 for clang 22 and older: 64-byte records, no uniform counter fields in the header; 11 after) */
+/* (raw format 10 for clang 22 and older, a Linux system's: 64-byte records, no uniform counter fields in the header; 11 after) */
 #if defined(__clang_major__) && __clang_major__ <= 22
 enum { DATA_SIZE = 64, RAW_VERSION = 10 };
 #define RAW_VERSION_11_FIELDS 0
@@ -58,8 +60,7 @@ enum { DATA_SIZE = 72, RAW_VERSION = 11 };
 #endif
 
 static void pgo_write(const char *path) {
-    const char *cb = PGO_COUNTERS_BEGIN, *ce = PGO_COUNTERS_END;
-    const char *db = PGO_DATA_BEGIN, *de = PGO_DATA_END, *nb = PGO_NAMES_BEGIN, *ne = PGO_NAMES_END;
+    const char *cb = PGO_CNT_BEGIN, *ce = PGO_CNT_END, *db = PGO_DAT_BEGIN, *de = PGO_DAT_END, *nb = PGO_NAM_BEGIN, *ne = PGO_NAM_END;
     const uint64_t ndata = (uint64_t)(de - db) / DATA_SIZE, ncnt = (uint64_t)(ce - cb) / 8, nnames = (uint64_t)(ne - nb);
     const uint64_t header[] = {
         0xff6c70726f667281ULL,        /* magic: \xfflprofr\x81 */
@@ -80,21 +81,20 @@ static void pgo_write(const char *path) {
     FILE *f = fopen(path, "wb");
     if (!f) return;
     fwrite(header, sizeof header, 1, f);
-    /* (the records' pointers to their counters are 32 bits in a COFF image, the rest zero, and the counters come first: negative) */
-#if defined(_WIN32)
     char *copy = malloc((size_t)(de - db));
     memcpy(copy, db, (size_t)(de - db));
+#ifdef _WIN32
+    /* (the records' pointers to their counters are 32 bits in a COFF image, the rest zero, and the counters come first: negative.
+       In an ELF image they are 64 bits already) */
     for (uint64_t i = 0; i < ndata; i++) {
         int32_t rel;
         memcpy(&rel, copy + i * DATA_SIZE + 16, 4);
         const int64_t wide = rel;
         memcpy(copy + i * DATA_SIZE + 16, &wide, 8);
     }
+#endif
     fwrite(copy, 1, (size_t)(de - db), f);
     free(copy);
-#else
-    fwrite(db, 1, (size_t)(de - db), f);
-#endif
     fwrite(cb, 1, (size_t)(ce - cb), f);
     fwrite(nb, 1, (size_t)nnames, f);
     static const char zero[8];
@@ -110,7 +110,7 @@ static DWORD WINAPI pgo_thread(void *arg) {
     for (;;) {
         Sleep(500);
         if (GetFileAttributesA(reset) != INVALID_FILE_ATTRIBUTES) {
-            memset(PGO_COUNTERS_BEGIN, 0, (size_t)(PGO_COUNTERS_END - PGO_COUNTERS_BEGIN));
+            memset(PGO_CNT_BEGIN, 0, (size_t)(PGO_CNT_END - PGO_CNT_BEGIN));
             DeleteFileA(reset);
         }
         if (GetFileAttributesA(dump) != INVALID_FILE_ATTRIBUTES) {
@@ -121,7 +121,7 @@ static DWORD WINAPI pgo_thread(void *arg) {
     return 0;
 }
 
-/* (relink) the Vulkan back end's own copy (nx2/build.py, RX_VK_PGO=gen) reads another variable: -DPGO_ENV="RX_VK_PGO_FILE" */
+/* (the renderer's copy reads a variable of its own, nx2/build.py: -DPGO_ENV="RX_VK_PGO_FILE") */
 #ifndef PGO_ENV
 #define PGO_ENV "HOS_PGO"
 #endif

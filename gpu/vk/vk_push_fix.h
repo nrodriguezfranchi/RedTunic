@@ -1,4 +1,4 @@
-// (relink, issue 640) The mesh shader fallback's task programs read the task payloads' address from the push constants with the
+// (hookshot) The mesh shader fallback's task programs read the task payloads' address from the push constants with the
 // member's byte offset (64) as its index, where SPIR-V takes the member's index (3): an access chain past the push block's last
 // member. Such a module is invalid, and NVIDIA's compiler faults on it. push_offset_fix gives a module whose access chains into a
 // push constant block by an index past its members, that is the Offset of one of them, take that member's index instead (a u32

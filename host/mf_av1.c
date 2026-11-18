@@ -1,4 +1,4 @@
-/* (relink) An AV1 decoder on Media Foundation, for nn::codec's AV1 decoder (host/nn_video.c).
+/* (hookshot) An AV1 decoder on Media Foundation, for nn::codec's AV1 decoder (host/nn_video.c).
 
    OoT's movies (romfs/Movie: the intro, ...) are AV1, and the static FFmpeg the build links has no AV1 decoder (its
    native one needs a hardware context; dav1d / libaom are not in it). Windows has one: the decoder MFT of the AV1
@@ -19,6 +19,9 @@
 #include <mftransform.h>
 #include <stdio.h>
 #include <string.h>
+#ifndef HOOKSHOT_ENV_H   /* (env_on: the switches' one rule) */
+#include "../gpu/vk/compat/hookshot_env.h"
+#endif
 
 #ifndef MFVideoFormat_AV1
 DEFINE_GUID(MFVideoFormat_AV1_local, 0x31305641, 0x0000, 0x0010, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71);
@@ -70,13 +73,13 @@ static int set_output_nv12(MfAv1 *m) {
     return 1;
 }
 
-/* (relink) Without the AV1 Video Extension the movies have no decoder: their pictures stay empty, which shows as a green screen, and the
+/* (hookshot) Without the AV1 Video Extension the movies have no decoder: their pictures stay empty, which shows as a green screen, and the
    intro never ends. Said once, on its own thread (the game goes on), with the way to the Store page. HOS_AV1_MISSING=1: as if it were missing */
 static DWORD WINAPI av1_missing_notice(LPVOID unused) {
     (void)unused;
-    if (MessageBoxA(NULL, "ReLink's movies need Microsoft's free AV1 Video Extension, which this PC does not have. Without it they show a green "
+    if (MessageBoxA(NULL, "Hookshot's movies need Microsoft's free AV1 Video Extension, which this PC does not have. Without it they show a green "
                           "screen and the game can stop at a black screen.\n\nOpen its Microsoft Store page now? Install it, then restart the game.",
-                    "Project ReLink", MB_YESNO | MB_ICONINFORMATION | MB_TOPMOST) == IDYES)
+                    "Hookshot", MB_YESNO | MB_ICONINFORMATION | MB_TOPMOST) == IDYES)
         ShellExecuteA(NULL, "open", "ms-windows-store://pdp/?ProductId=9MVZQVXJBQ9V", NULL, NULL, SW_SHOWNORMAL);
     return 0;
 }
@@ -90,11 +93,11 @@ static void av1_missing(void) {
 
 void *mf_av1_open(int w, int h) {
     if (!com_ready()) return NULL;
-    if (getenv("HOS_AV1_MISSING")) { av1_missing(); return NULL; }
+    if (env_on("HOS_AV1_MISSING")) { av1_missing(); return NULL; }
     MFT_REGISTER_TYPE_INFO in = {MFMediaType_Video, MFVideoFormat_AV1};
     IMFActivate **acts = NULL;
     UINT32 n = 0;
-    const int prefer_async = getenv("HOS_AV1_ASYNC") != NULL;
+    const int prefer_async = env_on("HOS_AV1_ASYNC");
     const UINT32 tries[2] = {prefer_async ? MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_ASYNCMFT : MFT_ENUM_FLAG_SYNCMFT,
                              prefer_async ? MFT_ENUM_FLAG_SYNCMFT : MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_ASYNCMFT};
     IMFTransform *mft = NULL;
@@ -147,8 +150,9 @@ static void pull(MfAv1 *m, mf_av1_picture_fn fn, void *user) {
             IMFMediaBuffer *b = NULL;
             const DWORD size = m->out_size ? m->out_size : (DWORD)((size_t)(m->stride > 0 ? m->stride : m->w) * m->h * 3 / 2);
             if (FAILED(MFCreateSample(&own)) || FAILED(MFCreateMemoryBuffer(size, &b))) { if (own) IMFSample_Release(own); return; }
-            IMFSample_AddBuffer(own, b);
+            const HRESULT attached = IMFSample_AddBuffer(own, b);
             IMFMediaBuffer_Release(b);
+            if (FAILED(attached)) { IMFSample_Release(own); return; }
             ob.pSample = own;
         }
         DWORD status = 0;
@@ -176,18 +180,19 @@ static void pull(MfAv1 *m, mf_av1_picture_fn fn, void *user) {
             LONG pitch = 0;
             const int locked2d = SUCCEEDED(IMFMediaBuffer_QueryInterface(b, &IID_IMF2DBuffer, (void **)&b2)) &&
                                  SUCCEEDED(IMF2DBuffer_Lock2D(b2, &p, &pitch));
-            if (!locked2d && SUCCEEDED(IMFMediaBuffer_Lock(b, &p, NULL, &len)))
-                pitch = m->stride > 0 ? m->stride : m->w;
-            if (p && pitch > 0) {
+            const int locked = locked2d || SUCCEEDED(IMFMediaBuffer_Lock(b, &p, NULL, &len));
+            if (locked && !locked2d) pitch = m->stride > 0 ? m->stride : m->w;
+            if (locked && p && pitch > 0) {
                 /* the chroma plane follows the luma rows the buffer has (the padded height): rows = 1.5 x that */
                 const DWORD rows = len / (DWORD)pitch;
                 const int luma_rows = rows >= (DWORD)m->h * 3 / 2 ? (int)(rows * 2 / 3) : m->h;
                 const int ow = m->want_w > 0 && m->want_w < m->w ? m->want_w : m->w;
                 const int oh = m->want_h > 0 && m->want_h < m->h ? m->want_h : m->h;
                 fn(user, p, p + (size_t)pitch * luma_rows, ow, oh, (int)pitch, (int64_t)t100 * 100);
-                if (locked2d) IMF2DBuffer_Unlock2D(b2);
-                else IMFMediaBuffer_Unlock(b);
             }
+            /* A rejected picture still owns its successful lock. */
+            if (locked2d) IMF2DBuffer_Unlock2D(b2);
+            else if (locked) IMFMediaBuffer_Unlock(b);
             if (b2) IMF2DBuffer_Release(b2);
             IMFMediaBuffer_Release(b);
         }
@@ -213,11 +218,20 @@ void mf_av1_decode(void *h, const uint8_t *data, size_t n, int64_t pts, mf_av1_p
     IMFMediaBuffer *b = NULL;
     if (FAILED(MFCreateSample(&s)) || FAILED(MFCreateMemoryBuffer((DWORD)n, &b))) { if (s) IMFSample_Release(s); return; }
     BYTE *p = NULL;
-    IMFMediaBuffer_Lock(b, &p, NULL, NULL);
+    const HRESULT locked = IMFMediaBuffer_Lock(b, &p, NULL, NULL);
+    if (FAILED(locked) || !p) {
+        if (SUCCEEDED(locked)) IMFMediaBuffer_Unlock(b);
+        IMFMediaBuffer_Release(b);
+        IMFSample_Release(s);
+        return;
+    }
     memcpy(p, data, n);
     IMFMediaBuffer_Unlock(b);
-    IMFMediaBuffer_SetCurrentLength(b, (DWORD)n);
-    IMFSample_AddBuffer(s, b);
+    if (FAILED(IMFMediaBuffer_SetCurrentLength(b, (DWORD)n)) || FAILED(IMFSample_AddBuffer(s, b))) {
+        IMFMediaBuffer_Release(b);
+        IMFSample_Release(s);
+        return;
+    }
     IMFSample_SetSampleTime(s, pts / 100);
     for (int tries = 0; tries < 2; tries++) {
         const HRESULT hr = IMFTransform_ProcessInput(m->mft, 0, s, 0);

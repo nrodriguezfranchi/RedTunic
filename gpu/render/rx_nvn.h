@@ -13,9 +13,13 @@
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 #include "nvn_api.h"
 
 #ifdef __cplusplus
+#ifndef _Static_assert   /* (C++ spells C11's _Static_assert static_assert: clang takes either, g++ only the latter) */
+#define _Static_assert static_assert
+#endif
 extern "C" {
 #endif
 
@@ -49,14 +53,14 @@ typedef struct { uint32_t magic, flags, origin, depth_mode; } nvn_dev;
 typedef struct { void *dev; uint32_t flags; uint64_t cmd_sz, comp_sz, ctl_sz, flush; uint64_t mem, mem_sz; } nvn_queue_builder;
 typedef struct { uint32_t magic; uint64_t submits; } nvn_queue;
 
-/* a memory pool: mem = host pointer of its storage (null: a virtual pool), gpu = its GPU address */
+/* a memory pool: mem = guest address of its storage (0: a virtual pool), gpu = its GPU address. (hookshot) The object
+   is guest memory, so it holds no host pointers: a virtual pool's page table is found by its GPU address. */
 typedef struct { void *dev; uint64_t mem; uint64_t size; uint32_t flags; } nvn_pool_builder;   /* mem: guest address */
-typedef struct nvn_vmap nvn_vmap;
 typedef struct {
     uint32_t magic, flags;
-    uint8_t *mem;                         /* host pointer of the storage (null for a virtual pool) */
+    uint64_t mem;                         /* guest address of the storage (0 for a virtual pool) */
     uint64_t size, gpu;                   /* GPU address: the guest address, or a virtual pool's range above 4 GB */
-    nvn_vmap *vmap;                       /* virtual pools: the page table */
+    uint64_t reserved;
 } nvn_pool;
 typedef struct { const nvn_pool *pool; int64_t off; int32_t n; } nvn_dpool;   /* texture / sampler descriptor pool */
 
@@ -100,21 +104,23 @@ typedef struct { uint32_t magic; uint64_t gpu; } nvn_event;   /* gpu: the 32-bit
 typedef struct { void *dev; uint64_t native; int32_t ntex, interval, active; uint64_t tex[4]; } nvn_win_builder;   /* tex: guest addresses */
 typedef struct {
     uint32_t magic; int32_t ntex, interval, next, active, crop[4];
-    nvn_tex *tex[4];
+    uint64_t tex[4];                      /* (hookshot) guest addresses, checked at each use */
     uint64_t presents;
 } nvn_win;
 
 /* a command buffer: records go to a growable host buffer (never into the game's command memory) */
+/* (hookshot) The object is guest memory: the recording buffer's pointers (seg, cur, end) are kept in a host table
+   (host/nvn_native.c cmd_rec), and the object holds only its slot there, which names the object it belongs to. */
 typedef struct {
     uint32_t magic, recording;
-    uint8_t *cur;
+    uint32_t slot, slot_pad;              /* the host table's slot (0: none yet) */
     uint64_t guest_flags;                 /* +0x10: NVN 55 inline code writes a dirty flag here */
-    uint8_t *end;
+    uint64_t reserved_18;
     /* NVN 55 headers inline fast paths that read the write pointer at +0x20 and its end at +0x28 (main+0x70644c) and
        emit raw GPU methods when 0x30 bytes fit: ~0 / 0 never fits, so every call takes the API (*Deferred) path */
     uint64_t inline_cur, inline_end;
     uint64_t cb, cb_data;                 /* the memory callback (guest), never called: records live in host memory */
-    uint8_t *seg;                         /* the recording buffer */
+    uint64_t reserved_40;
     uint64_t ctl, ctl_size;               /* control memory the game gave (guest): a handle lives as long as it */
     uint64_t game_size;                   /* command memory the game gave (accounting only) */
     uint64_t cmd_used, ctl_used, rec_start;
@@ -151,8 +157,10 @@ enum {
     NOP_DRAW_INDIRECT, NOP_DISPATCH_INDIRECT,   /* (mkw-recomp: NVN2's GPU-driven draws) */
     NOP_DRAW_MESH,                              /* (mkw-recomp: NVN2 mesh shading; the WebGPU replay leaves it out) */
     NOP_WAIT_EVENT,                             /* (mkw-recomp: a wait for an event another queue's work signals) */
-    NOP_PUSH_CONST,                             /* (relink: nvnCommandBufferPushComputeConstants) */
-    NOP_CLEAR_BUF,                              /* (relink: nvnCommandBufferClearBuffer) */
+    NOP_PUSH_CONST,                             /* (hookshot: nvnCommandBufferPushComputeConstants) */
+    NOP_CLEAR_BUF,                              /* (hookshot: nvnCommandBufferClearBuffer) */
+    NOP_UBO_CHECK,                              /* (Hookshot, HL_UBO_CHECK: a uniform block's bytes at its bind, beside the bind) */
+    NOP_UBO_INLINE,                             /* (Hookshot, HL_UBO_INLINE: a uniform bind with its block's bytes) */
     NOP_COUNT_
 };
 typedef struct { int32_t n; const nvn_tex *color[8]; nvn_view cview[8]; uint8_t has_cview[8]; const nvn_tex *depth; nvn_view dview; uint8_t has_dview; } nvn_p_set_rt;
@@ -190,11 +198,37 @@ typedef struct { uint64_t type, addr; } nvn_p_counter;
 #define NVN_COUNTER_WRITTEN (1ull << 32)   /* (type: the report's counter word is in memory already: a clear flag, host/nvn_native.c) */
 typedef struct { uint64_t src, dst, size; } nvn_p_copy_bb;
 typedef struct { uint64_t dst, size; /* data follows */ } nvn_p_update_ub;
-/* (relink) compute push constants: the bytes at offset in the compute driver bank's push area */
+/* (hookshot) compute push constants: the bytes at offset in the compute driver bank's push area */
 typedef struct { uint32_t offset, size; /* data follows */ } nvn_p_push_const;
-/* (relink) a buffer range filled with a 32-bit value */
+/* (hookshot) a buffer range filled with a 32-bit value */
 typedef struct { uint64_t dst, size; uint32_t value, pad; } nvn_p_clear_buf;
 typedef struct { int32_t enable, index; } nvn_p_restart;
+/* (Hookshot, HL_UBO_CHECK: docs/native-engine/direct-emission.md section 9) written after a BindUniformBuffer's record,
+   outside the accounting the game reads: hashes of the block's bytes (nvn_ubo_hash, at most 64 KB) at the bind, at the
+   end of the recording and at the submit (flags: which of the last two were taken, and whether a read failed). The
+   replay compares them with what it reads as submitted; nothing else reads it */
+typedef struct { int32_t stage, index; uint64_t addr, size; uint32_t flags, pad; uint64_t h_bind, h_end, h_sub; } nvn_p_ubo_check;
+#define NVN_UBO_CHECK_END 1u
+#define NVN_UBO_CHECK_SUB 2u
+#define NVN_UBO_CHECK_UNREAD 4u
+#define NVN_UBO_CHECK_MAX 0x10000u
+/* (Hookshot, HL_UBO_INLINE: direct-emission.md section 10) BindUniformBuffer with the block's bytes as they were at the bind
+   (n of them, following the payload; at most 64 KB): the bind as nvn_p_bind_buf has it, and the descriptor served from the
+   bytes. Written only for the slots step 1 measured final at their bind in every scene (host/nvn_native.c ubo_inline_slot) */
+typedef struct { int32_t stage, index; uint64_t addr, size; uint32_t n, pad; /* the bytes follow */ } nvn_p_ubo_inline;
+static inline uint64_t nvn_ubo_hash(const void *p, uint64_t n) {
+    const uint8_t *b = (const uint8_t *)p;
+    uint64_t h = 0x243F6A8885A308D3ull ^ n;
+    uint64_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        uint64_t w;
+        memcpy(&w, b + i, 8);
+        h = (h ^ w) * 0x9E3779B97F4A7C15ull;
+        h ^= h >> 29;
+    }
+    for (; i < n; i++) h = (h ^ b[i]) * 0x100000001B3ull;
+    return h ^ (h >> 31);
+}
 /* (mkw-recomp) indirect draws: up to max draws of `stride`-byte arguments at `indirect` (indexed: count, instances,
    first index, base vertex, base instance; arrays: count, instances, first, base instance), as many as the 32-bit
    value at count_addr says when there is one; read at replay, after the GPU's writes there reached guest memory */
@@ -227,7 +261,7 @@ void rx_nvn_submit(const uint64_t *handles, int n);
 void rx_nvn_submit_q(const uint64_t *handles, int n, uint64_t queue);
 /* fence value of everything submitted so far; waits until the GPU reached a fence (1: reached, 0: timed out) */
 uint64_t rx_nvn_fence(void);
-uint64_t rx_nvn_fence_q(uint64_t queue);   /* (relink) a fence of one queue */
+uint64_t rx_nvn_fence_q(uint64_t queue);   /* (hookshot) a fence of one queue */
 /* submits and presents queued so far / replayed so far (recordings released after a submit stay until it replayed) */
 uint64_t rx_nvn_pushed(void);
 uint64_t rx_nvn_replayed(void);
@@ -246,8 +280,8 @@ void rx_nvn_set_texture_pool_size(int n);
 void rx_nvn_texture_released(const nvn_tex *t);
 void rx_nvn_texture_created(const nvn_tex *t);
 void rx_nvn_program_released(const nvn_prog *p);
-/* (relink) the game set a program's shaders: the Vulkan back end makes a compute program's pipeline ahead (gpu/vk vk_draw.cpp) */
-void rx_nvn_program_set(const nvn_prog *p);
+/* (hookshot) a program was given its shaders (the Vulkan back end loads what it kept for it; WebGPU: nothing) */
+void rx_nvn_program_created(const nvn_prog *p);
 /* CPU reads / writes of a texture (ReadTexels / WriteTexels) */
 void rx_nvn_read_texels(const nvn_tex *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, uint8_t *dst,
                         size_t row, size_t img);

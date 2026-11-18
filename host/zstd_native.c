@@ -1,4 +1,4 @@
-/* (relink, 15/11) The game's zstd sequence loop, natively.
+/* (hookshot, 15/11) The game's zstd sequence loop, natively.
 
    Arriving in Hyrule Castle, the frames of 50 to 400 ms are the game's loading: its ParallelDecompThread spent 89 % of its
    samples in those frames in f_801102e0 (hs2996, all-thread samples), and ARes_Loading most of its own. f_801102e0 is the
@@ -35,7 +35,7 @@ static void put64(uint64_t a, uint64_t v) { memcpy(GP(a), &v, 8); HOS_WRITTEN(GP
 static void put32(uint64_t a, uint32_t v) { memcpy(GP(a), &v, 4); HOS_WRITTEN(GP(a), 4); }
 static inline uint64_t ror64(uint64_t v, unsigned n) { n &= 63; return n ? (v >> n) | (v << (64 - n)) : v; }
 
-/* (relink, 15/11) The virtual cores' polls. The lifted f_801102e0 polls at every backward branch (nx2/poll.py): a thread
+/* (hookshot, 15/11) The virtual cores' polls. The lifted f_801102e0 polls at every backward branch (nx2/poll.py): a thread
    that a better waiter asked for its virtual core (hos_thread.c, vc_kick) gives it up there. This loop is one block's
    sequences (110 KB written a call on average, ~155 us natively: hs3004), and without the polls a waiter asked for the core
    waited for the whole call. BACK(cond) is one of those branches here: when it is taken, the lifted code's check of c->poll;

@@ -3,6 +3,7 @@
    (debug output, ticks, info queries) or a sign that an SDK function above it wants an HLE. Unknown ones stop the
    run with the svc number and the caller, so the log says what to do next. Numbers: switchbrew.org "SVC". */
 #include "hos.h"
+#include "hos_guestpages.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,7 +27,7 @@ static uint64_t get_info(uint32_t id0, uint64_t id1, int *ok) {
     case 4: return HOS_HEAP_BASE;                          /* HeapRegionAddress */
     case 5: return HOS_SPACE_END - HOS_HEAP_BASE;          /* HeapRegionSize */
     case 6: return hos_total_memory;                       /* TotalMemorySize */
-    case 7: return hos_reported_used_memory(hos_program_size, 1);   /* UsedMemorySize */
+    case 7: return hos_used_memory(hos_program_size);      /* UsedMemorySize: + heap + mapped pages (hos_mem.c) */
     case 8: return 0;                                      /* DebuggerAttached */
     case 11: return 0x5A3C9E1F0B7D2468ULL ^ (id1 * 0x9E3779B97F4A7C15ULL);   /* RandomEntropy */
     case 12: return 0x08000000ULL;                         /* AslrRegionAddress */
@@ -35,14 +36,14 @@ static uint64_t get_info(uint32_t id0, uint64_t id1, int *ok) {
     case 15: return HOS_SYSTEM_END - HOS_SYSTEM_BASE;      /* StackRegionSize */
     case 16: case 17: return 0;                            /* SystemResourceSize total / used */
     case 18: return hos_program_id;                        /* ProgramId (main.npdm's, gen/hos_image.c) */
-    case 20: {   /* UserExceptionContextAddress: (relink) OoT's nn::os::SetDyingMessageRegionPrivate writes its
+    case 20: {   /* UserExceptionContextAddress: (hookshot) OoT's nn::os::SetDyingMessageRegionPrivate writes its
                     dying-message region into it; a zeroed page, made once */
         static uint64_t ctx_page;
         if (!ctx_page) ctx_page = hos_sys_alloc(0x1000, 0x1000);
         return ctx_page;
     }
     case 21: return hos_total_memory;                      /* TotalNonSystemMemorySize */
-    case 22: return hos_reported_used_memory(hos_program_size, 1);  /* UsedNonSystemMemorySize */
+    case 22: return hos_used_memory(hos_program_size);     /* UsedNonSystemMemorySize */
     case 23: return 1;                                     /* IsApplication */
     /* the Switch 2 SDK's (ids from Eglantine's svc_types.h / svc_info.cpp) */
     case 24: return 256;                                   /* FreeThreadCount */
@@ -112,11 +113,7 @@ static void release_locked(uint64_t mutex) {
 #if (defined(__x86_64__) || defined(_M_X64)) && !defined(__EMSCRIPTEN__)
 #include <emmintrin.h>
 static int spin_for_release(uint64_t mutex, uint32_t held) {
-    static int64_t limit = -1;
-    if (limit < 0) {
-        const char *e = getenv("HOS_SPIN_US");
-        limit = (e ? atoll(e) : 20) * 1000;
-    }
+    const int64_t limit = hos_spin_ns();
     static int misses[256], tries[256];
     const unsigned slot = (unsigned)(mutex >> 3 ^ mutex >> 11) & 255;
     const int m = __atomic_load_n(&misses[slot], __ATOMIC_RELAXED);
@@ -153,7 +150,9 @@ static uint32_t arbitrate_lock(uint32_t owner, uint64_t mutex, uint32_t tag) {
     waiters[nwaiters++] = (Waiter){self, mutex, 0, tag, 0};
     ReleaseSRWLockExclusive(&klock);
     int to;
+    HOS_JT(JT_K_WAIT_B, mutex, hos_jt_lr());
     hos_thread_wait(self, -1, &to);   /* woken once release_locked made us the owner */
+    HOS_JT(JT_K_WAIT_E, mutex, 2);
     return 0;
 }
 
@@ -178,7 +177,9 @@ static uint32_t wait_key(uint64_t mutex, uint64_t key, uint32_t tag, int64_t tim
     release_locked(mutex);
     ReleaseSRWLockExclusive(&klock);
     int to;
+    HOS_JT(JT_K_WAIT_B, key, hos_jt_lr());
     hos_thread_wait(self, timeout, &to);
+    HOS_JT(JT_K_WAIT_E, key, to ? 6 : 2);
     if (!to) return 0;
     AcquireSRWLockExclusive(&klock);
     int i = find_thread(self);
@@ -223,7 +224,7 @@ static void signal_key(uint64_t key, int32_t count) {
     ReleaseSRWLockExclusive(&klock);
 }
 
-/* ---- (relink) the address arbiter: svcWaitForAddress / svcSignalToAddress -----------------------------------
+/* ---- (hookshot) the address arbiter: svcWaitForAddress / svcSignalToAddress -----------------------------------
    OoT's SDK (22.2.8) uses them; MKW's never did. Waiters share the table above (on_key 2, key = the address) and klock,
    so the condition check and the sleep are atomic against a signal, as in Horizon's KAddressArbiter (mesosphere).
    Wait types: 0 WaitIfLessThan, 1 DecrementAndWaitIfLessThan, 2 WaitIfEqual (32-bit), 3 WaitIfEqual64 (21.0+).
@@ -271,7 +272,9 @@ static uint32_t wait_address(uint64_t addr, uint32_t type, uint64_t value, int64
     waiters[nwaiters++] = (Waiter){self, 0, addr, 0, 2};
     ReleaseSRWLockExclusive(&klock);
     int to;
+    HOS_JT(JT_K_WAIT_B, addr, hos_jt_lr());
     hos_thread_wait(self, timeout, &to);
+    HOS_JT(JT_K_WAIT_E, addr, to ? 6 : 2);
     if (!to) return 0;
     AcquireSRWLockExclusive(&klock);
     int i = find_thread(self);
@@ -349,14 +352,22 @@ static void query_memory(uint64_t out, uint64_t addr) {
 #define CUR_THREAD 0xFFFF8000u
 static HosThread *thread_handle(uint32_t h) { return h == CUR_THREAD ? hos_self() : hos_thread_by_handle(h); }
 
+int hos_core_count_on(void);
+void hos_core_count_svc(void);
 void a64_svc(Ctx *c, uint32_t imm) {
     hos_vcore_checkpoint();
     switch (imm) {
-    case 0x01:   /* SetHeapSize(-, size) -> (result, heap address) */
+    case 0x01: { /* SetHeapSize(-, size) -> (result, heap address) */
+        int hos_heap_size_fits(uint64_t size);   /* (hookshot, hos_mem.c: the heap stays in the guest window) */
+        if (!hos_heap_size_fits(c->x[1])) {
+            c->x[0] = 0xCA01;   /* svc::ResultOutOfMemory */
+            return;
+        }
         hos_heap_size = c->x[1];
         c->x[0] = R_OK;
         c->x[1] = HOS_HEAP_BASE;
         return;
+    }
     case 0x02:   /* SetMemoryPermission */
     case 0x03:   /* SetMemoryAttribute */
     case 0x16:   /* CloseHandle */
@@ -371,6 +382,8 @@ void a64_svc(Ctx *c, uint32_t imm) {
     case 0x07:   /* ExitProcess */
         hos_log("svcExitProcess");
         hos_log_flush();
+        void hos_crash_clean_end(void);
+        hos_crash_clean_end();
         ExitProcess(0);
         return;
     case 0x0C: { /* GetThreadPriority(-, handle) -> (result, priority) */
@@ -416,10 +429,10 @@ void a64_svc(Ctx *c, uint32_t imm) {
     case 0x1C:   /* WaitProcessWideKeyAtomic(mutex, key, tag, timeout) */
         c->x[0] = wait_key(c->x[0], c->x[1], (uint32_t)c->x[2], (int64_t)c->x[3]);
         return;
-    case 0x34:   /* WaitForAddress(address, type, value, timeout) (relink) */
+    case 0x34:   /* WaitForAddress(address, type, value, timeout) (hookshot) */
         c->x[0] = wait_address(c->x[0], (uint32_t)c->x[1], c->x[2], (int64_t)c->x[3]);
         return;
-    case 0x35:   /* SignalToAddress(address, type, value, count) (relink) */
+    case 0x35:   /* SignalToAddress(address, type, value, count) (hookshot) */
         c->x[0] = signal_address(c->x[0], (uint32_t)c->x[1], (int32_t)c->x[2], (int32_t)c->x[3]);
         return;
     case 0x1D:   /* SignalProcessWideKey(key, count) */
@@ -427,10 +440,15 @@ void a64_svc(Ctx *c, uint32_t imm) {
         return;
     case 0x0B: { /* SleepThread(ns) */
         void hos_sleep_logged(int64_t ns, uint64_t lr);
+        extern _Thread_local int64_t hos_slept_ns[2];   /* (hos_thread.c: the FPS counter's Breakdown, while it shows) */
+        extern volatile int hos_fps_timing;
+        const int64_t t0 = hos_fps_timing ? hos_now_ns() : 0;
         hos_sleep_logged((int64_t)c->x[0], c->x[30] | 1);
+        if (t0) hos_slept_ns[1] += hos_now_ns() - t0;
         return;
     }
     case 0x10:   /* GetCurrentProcessorNumber */
+        if (hos_core_count_on()) hos_core_count_svc();   /* (TICK-062 A10, HOS_CORE_COUNT) */
         c->x[0] = (uint32_t)hos_thread_core(hos_self());
         return;
     case 0x1E:   /* GetSystemTick */
@@ -462,14 +480,19 @@ void a64_svc(Ctx *c, uint32_t imm) {
         c->x[0] = R_OK;
         return;
     case 0x2D:   /* UnmapPhysicalMemory(address, size): the pages read as zero if mapped again */
+        if (!hos_guest_range(c->x[0], c->x[1])) {   /* (hookshot: guest pages only) */
+            c->x[0] = 0xCA01;
+            return;
+        }
         {   /* (pages under a Vulkan import stay committed, zeroed: hos_mem.c FreeMemoryPages) */
             extern int rx_guest_imported(uint64_t lo, uint64_t hi);
             if (rx_guest_imported(c->x[0], c->x[0] + c->x[1])) memset(GP(c->x[0]), 0, (size_t)c->x[1]);
-            else VirtualFree(GP(c->x[0]), (SIZE_T)c->x[1], MEM_DECOMMIT);
+            else if (hos_gp_ready() && hos_gp_touches(GP(c->x[0]), (size_t)c->x[1])) hos_gp_decommit(GP(c->x[0]), (size_t)c->x[1]);
+            else hos_gp_hold(1), VirtualFree(GP(c->x[0]), (SIZE_T)c->x[1], MEM_DECOMMIT), hos_gp_hold(0);
         }
         c->x[0] = R_OK;
         return;
-    case 0x1F: { /* ConnectToNamedPort(-, name) -> (result, session handle): (relink) SDK code that resolves a
+    case 0x1F: { /* ConnectToNamedPort(-, name) -> (result, session handle): (hookshot) SDK code that resolves a
                     service through "sm:" (nn::sm::Initialize, from nn::nsd's HIPC client in OoT) gets a session
                     whose requests svc 0x21 answers empty, as for any service the runtime does not emulate. */
         static volatile LONG next = 0;

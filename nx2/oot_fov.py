@@ -1,38 +1,24 @@
-"""Field of view for Ocarina of Time 1.1.1: C added after one instruction of the game (a64_lift.py Lifter.after).
+"""Adjust the gameplay lens before its projection and frustum are built (OoT 1.1.1).
 
-The camera update (main+0x4c52d0..) copies the active camera's lens into the perspective projection the renderer and the culling
-read: near (+0x134) and far (+0x138) planes, then the vertical angle in radians (ldr s0, [x19, #0x13c]), which it stores at
-+0xa0 and from whose half it takes the sine, cosine and tangent (+0xa4, +0xa8, +0xac: the matrix update and the frustum culling
-use those). Right after that load the angle is multiplied by hos_fov_scale (host/nn_vi.c: the Insert menu's Field of view in
-percent, HOS_FOV=<percent> over it), so the projection, its matrix and the culling all get the wider (or narrower) angle
-together, and the camera's own angle is left as the game set it: nothing compounds from frame to frame. At 1.0 (100%, the
-default) nothing changes. The angle stays under 2.9 radians (166 degrees).
-
-The site's original word is checked: another game version leaves it out (and says so).
+The camera update loads its vertical angle at +0x13c, then writes the angle and its
+half-angle's sine, cosine and tangent into sead's perspective projection. Changing
+only that load lets the game build both rendering and CPU culling from the chosen
+angle, without changing the camera's authored angle or accumulating a scale.
 """
 
-MAIN = 0x80020000   # (main's base in this image: nx2/eden_image.py)
-SITE = 0x4c52f8
-LDR_S0_X19_13C = 0xbd413e60
-TEXT = ("{ extern volatile float hos_fov_scale; const float _k = hos_fov_scale; if (_k > 0.0f && (_k < 0.999f || _k > 1.001f)) { "
-        "float _a; memcpy(&_a, c->vreg[0], 4); if (_a > 0.0f && _a < 3.1f) { _a *= _k; if (_a > 2.9f) _a = 2.9f; "
-        "uint32_t _u; memcpy(&_u, &_a, 4); a64_vset64(c->vreg[0], _u); } } }   /* (nx2/oot_fov.py: field of view) */")
+MAIN = 0x80020000
+BUILD_ID = "e0f3ccfaf50065ae4ea01eb5aeb13b1a45da3348"
+SITE = MAIN + 0x4c52f8
+# The angle load, half-angle multiply and projection angle store.
+WORDS = (0xbd413e60, 0x1e210808, 0xbd00a280)
+HOOK = ("{ extern void hos_oot_fov(Ctx *c, uint64_t camera); hos_oot_fov(c, c->x[19]); }"
+        "   /* (nx2/oot_fov.py: gameplay field of view) */")
 
 
-def install(lifter, img):
-    """The site into lifter.after; left out when its word differs (another game version)"""
-    pc = MAIN + SITE
-    try:
-        have = img.word(pc)
-    except Exception:
-        have = None
-    if have != LDR_S0_X19_13C:
-        print("field of view: main+%#x holds %s, not %08x: left out" % (SITE, "?" if have is None else "%08x" % have,
-                                                                        LDR_S0_X19_13C))
+def install(lifter, img, build_id):
+    if build_id != BUILD_ID or any(img.word(SITE + 4 * i) != word for i, word in enumerate(WORDS)):
+        print("field of view: unsupported camera code, left out")
         return 0
-    if pc in lifter.after:
-        lifter.after[pc] += "\n" + TEXT
-    else:
-        lifter.after[pc] = TEXT
-    print("field of view: 1 of 1 site")
+    lifter.after[SITE] = (lifter.after[SITE] + "\n" if SITE in lifter.after else "") + HOOK
+    print("field of view: gameplay lens hooked")
     return 1

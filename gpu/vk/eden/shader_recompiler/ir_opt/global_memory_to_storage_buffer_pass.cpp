@@ -27,6 +27,9 @@
 #include "shader_recompiler/frontend/ir/value.h"
 #include "shader_recompiler/host_translate_info.h"
 #include "shader_recompiler/ir_opt/passes.h"
+#ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
+#include "hookshot_env.h"
+#endif
 
 namespace Shader::Optimization {
 
@@ -47,22 +50,20 @@ thread_local PointerDiag g_pointer_diag{};
 extern thread_local u32 g_nvn2_compute_ssbo_base;
 extern thread_local u32 g_nvn2_compute_ssbo_count;
 extern thread_local bool g_all_global_this;   // (RX_VK_ALL_GLOBAL_PROGS, vk_shader.cpp: no access of this program bound)
+extern thread_local bool g_gm_port_this;      // (EDEN_NX2_GM_PORT_PROGS, vk_shader.cpp: the port for this program)
 
 namespace {
 bool PointerDiagOn() {
     static const bool on = std::getenv("RX_VK_PTR_DIAG") != nullptr && std::atoi(std::getenv("RX_VK_PTR_DIAG")) != 0;
     return on;
 }
-/// (EvilOOT) a split address (see PointerDiag) is not bound to the constant buffer pointer on one side of its select or phi;
-/// it is left to the run-time search, which finds whichever bound buffer (or table entry, or pointer table pool) the
-/// address really falls in. #410's bug class (EvilOOT's near leaves): bound to one side, the other side's reads went to
-/// the wrong buffer. On by default since the search covers whole pools (OoT's culling: characters, fallen leaves and
-/// fireflies came back). RX_VK_PTR_SPLIT_FALLBACK=0: bound as before.
-bool SplitFallbackOn() {
-    static const bool on = !std::getenv("RX_VK_PTR_SPLIT_FALLBACK") || std::atoi(std::getenv("RX_VK_PTR_SPLIT_FALLBACK")) != 0;
-    return on;
-}
-/// (relink) Switches for the analysis ported from Fritchii (Frizti/Fritchii), read once. EDEN_* variables are part of the
+// (EvilOOT) a split address (see PointerDiag) is not bound to the constant buffer pointer on one side of its select or phi;
+// it is left to the run-time search (CollectStorageBuffers, origins.split), which finds whichever bound buffer (or table
+// entry, or pointer table pool) the address really falls in. An earlier bug class (EvilOOT's near leaves): bound to one side,
+// the other side's reads went to the wrong buffer. The search covers whole pools (OoT's culling: characters, fallen
+// leaves and fireflies came back).
+
+/// (hookshot) Switches for the analysis ported from Fritchii (Frizti/Fritchii), read once. EDEN_* variables are part of the
 /// program cache's key (vk_shader.cpp disk_stamp), so a change translates the programs again.
 ///   EDEN_NX2_GM_LEGACY=0     the port (default 1 since v2.0.4: the tracking as before the port (NVN-biased, then unbiased search; no pairing, no native rules)
 ///   EDEN_NX2_GM_NATIVE=0     the pairing, but not the native-program rules (mapped pointers, candidates bound together)
@@ -78,16 +79,25 @@ bool GmLegacy() {
     static const bool on{EnvSwitch("EDEN_NX2_GM_LEGACY", true)};
     return on;
 }
-/// (relink) The tracking a stage gets. EDEN_NX2_GM_LEGACY=0/1: the port / the tracking as before, for every stage. Unset: the port
+/// (hookshot) The tracking a stage gets. EDEN_NX2_GM_LEGACY=0/1: the port / the tracking as before, for every stage. Unset: the port
 /// for the geometry and compute stages, the tracking as before for the fragment stage. The port placed the trees and terrain right
 /// (v2.0.3: no floating trees, issue #729) and the dark characters were lighting, which the fragment stage reads (light probes).
 /// EDEN_NX2_GM_SPLIT=1: that split; unset or 0: the tracking as before everywhere (v2.0.4/v2.0.5's default). Off by default again
 /// (2026-11-08 test): with it the cold precompile of the 10340 compute programs took 650 s instead of ~130 s.
+/// (floating trees, issue 994: the full split removed them but tore the cliffs) EDEN_NX2_GM_SPLIT=2: the port for the geometry
+/// stages only; =3: for compute programs only. EDEN_NX2_GM_PORT_PROGS=<key prefix>[,...]: the port for those programs alone (the
+/// bisection of which program places the trees)
 bool GmLegacyFor(Stage stage) {
+    if (g_gm_port_this) return false;
     static const char* const forced{std::getenv("EDEN_NX2_GM_LEGACY")};
     if (forced && *forced) return GmLegacy();
-    static const bool split{EnvSwitch("EDEN_NX2_GM_SPLIT", false)};
-    return !split || stage == Stage::Fragment;
+    static const int split{std::getenv("EDEN_NX2_GM_SPLIT") ? std::atoi(std::getenv("EDEN_NX2_GM_SPLIT")) : 0};
+    switch (split) {
+    case 1: return stage == Stage::Fragment;
+    case 2: return stage == Stage::Fragment || stage == Stage::Compute;
+    case 3: return stage != Stage::Compute;
+    default: return true;
+    }
 }
 bool GmNative() {
     static const bool on{EnvSwitch("EDEN_NX2_GM_NATIVE", true)};
@@ -141,18 +151,18 @@ struct StorageInfo {
     /// instructions (the IR does not change while storage buffers are collected).
     std::unordered_map<const IR::Inst*, std::optional<StorageBufferAddr>> biased_tracks;
     std::unordered_map<const IR::Inst*, std::optional<StorageBufferAddr>> unbiased_tracks;
-    StorageBufferSet tables;   // (relink: TrackTable's, for the fallbacks)
+    StorageBufferSet tables;   // (hookshot: TrackTable's, for the fallbacks)
     std::unordered_map<const IR::Inst*, small_vector<StorageBufferAddr, 4>> native_candidates;
     /// A native access with several candidate pointers was left global.
     bool native_runtime_bounds{};
-    /// (relink) Fritchii's analysis (pointer pairing, iterator words, atomics' pointers): off, the old tracks alone
+    /// (hookshot) Fritchii's analysis (pointer pairing, iterator words, atomics' pointers): off, the old tracks alone
     bool pairing{true};
-    /// (relink) Fritchii's native-program rules (Environment::IsNativeProgram): pointers must be mapped, candidates
+    /// (hookshot) Fritchii's native-program rules (Environment::IsNativeProgram): pointers must be mapped, candidates
     bool native{};
-    /// (relink) Several candidates of an access, and the tracked side of a split one, are bound; cleared when they
+    /// (hookshot) Several candidates of an access, and the tracked side of a split one, are bound; cleared when they
     /// would leave too few bindings (Lichii #421: the first result kept instead of overflowing MAX_SSBOS)
     bool bind_candidates{true};
-    /// (relink, Lichii #410) the tracked side of a split access is bound (see CollectStorageBuffers)
+    /// (hookshot, Lichii #410) the tracked side of a split access is bound (see CollectStorageBuffers)
     bool bind_competing{true};
     bool competing_bound{};
 };
@@ -476,7 +486,7 @@ std::optional<StorageBufferAddr> Track(const IR::Value& value, const Bias* bias,
         }
         return storage_buffer;
     }};
-    // (relink, from Lichii) A pointer loaded from memory is a new address, not an offset into the buffer that supplied it: its
+    // (hookshot, from Lichii) A pointer loaded from memory is a new address, not an offset into the buffer that supplied it: its
     // load is not followed back to that buffer's own constant-buffer descriptor.
     const auto stop_at_memory = [](IR::Value operand) {
         if (!operand.IsImmediate() && IsGlobalMemory(*operand.InstRecursive())) {
@@ -487,7 +497,7 @@ std::optional<StorageBufferAddr> Track(const IR::Value& value, const Bias* bias,
     return BreadthFirstSearch(value, pred, stop_at_memory);
 }
 
-/// (relink) A low address read from a storage buffer table: GetCbuf(index, x * 16 + base), x a run-time value
+/// (hookshot) A low address read from a storage buffer table: GetCbuf(index, x * 16 + base), x a run-time value
 std::optional<StorageBufferAddr> TrackTable(const IR::Value& value) {
     const auto pred{[](const IR::Inst* inst) -> std::optional<StorageBufferAddr> {
         if (inst->GetOpcode() != IR::Opcode::GetCbufU32 && inst->GetOpcode() != IR::Opcode::GetCbufU32x2) {
@@ -1265,7 +1275,7 @@ AddrOrigins Origins(const IR::Value& root) {
     }
     return g_origins[top];
 }
-/// (relink, from Lichii b8d81e20) Whether an address is a select or phi of which one input is a pointer loaded from memory: Ocarina's foliage
+/// (hookshot, from Lichii b8d81e20) Whether an address is a select or phi of which one input is a pointer loaded from memory: Ocarina's foliage
 /// placement records are read from c0[12] or from *c0[12]. Tracked to the constant buffer pointer alone, the loaded path read out of bounds
 /// as zeros, the near-leaf pass wrote NaN positions, and trees had no leaves. Such a load stays global: the backend's page table reads it
 bool MixesLoadedPointer(const IR::Value& value) {
@@ -1308,7 +1318,7 @@ bool MixesLoadedPointer(const IR::Value& value) {
     return merge && loaded;
 }
 
-thread_local bool g_follow_stage = false;   // (relink: the program being translated is compute, where the page table is)
+thread_local bool g_follow_stage = false;   // (hookshot: the program being translated is compute, where the page table is)
 thread_local bool g_graphics_stage = false;   // (sharkiix: the program being translated is a geometry stage: vertex, tessellation, geometry, task, mesh)
 
 /// Collects the storage buffer used by a global memory instruction and the instruction itself
@@ -1327,8 +1337,7 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, 
     };
     // (EvilOOT, RX_VK_PTR_DIAG) counted on every way out of here
     const bool diag{PointerDiagOn()};
-    const bool split_fallback{SplitFallbackOn()};
-    const AddrOrigins origins{diag || split_fallback ? Origins(inst.Arg(0)) : AddrOrigins{}};
+    const AddrOrigins origins{Origins(inst.Arg(0))};
     const auto count_fallback{[&](bool table) {
         if (diag) {
             ++g_pointer_diag.fallback;
@@ -1355,7 +1364,6 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, 
     const Bias* const bias{g_nvn2_compute_ssbo_base ? &compute_bias : &nvn_bias};
     {
         // (only where the page table is: compute. A graphics stage reads such a load as 0, and that blanked every menu text)
-        static const bool follow{std::getenv("RX_VK_NO_FOLLOW") == nullptr};
         const IR::Opcode op{inst.GetOpcode()};
         // (and the writes and 32-bit atomics through such an address: the culling's outputs and counters, which the backend's page
         // table now reaches too. Tracked to the constant buffer alone they went to a buffer at address 0, and every count stayed 0)
@@ -1366,13 +1374,13 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, 
                          op == IR::Opcode::GlobalAtomicOr32 || op == IR::Opcode::GlobalAtomicXor32 || op == IR::Opcode::GlobalAtomicExchange32 ||
                          op == IR::Opcode::GlobalAtomicCompareExchange32};
         // (RX_VK_FOLLOW_STORES=1: the writes too. Off: they made the culling count but drew no leaves, and a GPU faulted in it, #132)
-        static const bool no_store{std::getenv("RX_VK_FOLLOW_STORES") == nullptr};
-        if (follow && g_follow_stage && (load || (store && !no_store)) && MixesLoadedPointer(low_addr_info->value)) {
+        static const bool no_store{!env_on("RX_VK_FOLLOW_STORES")};
+        if (g_follow_stage && (load || (store && !no_store)) && MixesLoadedPointer(low_addr_info->value)) {
             return;   // (left global: MixesLoadedPointer)
         }
     }
     const IR::U32 low_addr{low_addr_info->value};
-    // (relink) Left global: found by its address at run time (the bound buffers, the program's tables, the page table).
+    // (hookshot) Left global: found by its address at run time (the bound buffers, the program's tables, the page table).
     // The table the address is read from, if it is, is kept for that search, as on every way to the run-time search.
     const auto leave_global{[&] {
         bool table_found{};
@@ -1406,7 +1414,7 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, 
     if (info.pairing && conditions_or_null) {
         const TrackingConditions& conditions{*conditions_or_null};
         // (Fritchii) The 64-bit constant buffer pointer whose low word is summed into the address's low half and whose
-        // high word into its high half. ReLink's mesh programs had a texture handle and a float (c5+0x60) taken for
+        // high word into its high half. Hookshot's mesh programs had a texture handle and a float (c5+0x60) taken for
         // their base by the searches below, which read only the low half: the access read zeros (Death Mountain's
         // terrain under its trees missing: the floating trees).
         const std::optional<StorageBufferAddr> paired_pointer{
@@ -1426,7 +1434,7 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, 
             if (candidates.size() > 1) {
                 // Bind every candidate and keep the access global; the backend picks the buffer at
                 // run time. Rebasing on one of them drops the other path's accesses.
-                // (relink: unless they would take too many bindings, StorageInfo::bind_candidates: then the run-time
+                // (hookshot: unless they would take too many bindings, StorageInfo::bind_candidates: then the run-time
                 // search alone)
                 if (info.bind_candidates) {
                     for (const StorageBufferAddr& candidate : candidates) {
@@ -1472,7 +1480,7 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, 
     if (!storage_buffer) {
         // If it fails, track without a bias
         storage_buffer = not_c1(cached_track(nullptr, info.unbiased_tracks));
-        // (relink) A float add has no run-time search: its fallback stores nothing, so where the search above found only a c1
+        // (hookshot) A float add has no run-time search: its fallback stores nothing, so where the search above found only a c1
         // word the sum was lost. OoT's 499dbfd0721d2858 adds the sky's spherical harmonics (the outdoor ambient light) at
         // c0+0x20's buffer plus a c1 offset: the c0 pointer beside that offset is the base. Without it the scene lost its
         // ambient light and the exposure lifted the dark night until it looked like day. EDEN_F32_ADD_TRACK=0: as before
@@ -1493,14 +1501,13 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, 
         // c0 while part of it comes from memory: the far-foliage and mesh programs (95db514a35353e28, d905f52b7517c681,
         // 51183fe750d5d0c8...) took float constants for a buffer address ("storage buffer NOT bound (reads zeros)", c5+0x60),
         // read zeros and drew the plants without colour (white/sky-blue "mirror" ferns, glowing flowers). Left to the run-time
-        // search. RX_VK_NO_CBUF_LOAD_RULE=1: off
-        static const bool cbuf_load_rule{std::getenv("RX_VK_NO_CBUF_LOAD_RULE") == nullptr};
-        if (cbuf_load_rule && storage_buffer->index != 0 && g_graphics_stage && Origins(inst.Arg(0)).load) {
+        // search
+        if (storage_buffer->index != 0 && g_graphics_stage && Origins(inst.Arg(0)).load) {
             leave_global();
             return;
         }
     }
-    if (split_fallback && origins.split) {
+    if (origins.split) {
         // (Lichii #410, Duck912, adapted) The tracked pointer is one side of a select or phi whose other side is a pointer
         // loaded from memory: bound too, so that the run-time search finds the accesses through it in every stage (the
         // loaded side's are the page table's, where the stage has one). OoT's near-leaf pass reads its placement records
@@ -1657,9 +1664,8 @@ void GlobalMemoryToStorageBufferPass(Environment& env, IR::Program& program,
     if (!has_global_memory) {
         return;
     }
-    // (relink)
-    static const bool no_mesh{std::getenv("RX_VK_FOLLOW_MESH") == nullptr};
-    g_follow_stage = program.stage == Stage::Compute || (!no_mesh && (program.stage == Stage::Task || program.stage == Stage::Mesh));
+    // (hookshot: compute only; the task and mesh stages were tried for the foliage, which it did not bring back)
+    g_follow_stage = program.stage == Stage::Compute;
     // (geometry stages only: with the fragment stage too, the sky drew black rectangles and the lighting went too bright at the castle)
     g_graphics_stage = program.stage != Stage::Compute && program.stage != Stage::Fragment;
     g_origins.clear();   // (EvilOOT: Origins' walk, kept per program)
@@ -1667,7 +1673,7 @@ void GlobalMemoryToStorageBufferPass(Environment& env, IR::Program& program,
     std::optional<TrackingConditions> conditions;
     StorageInfo info;
     info.pairing = pairing;
-    // (relink: every NVN2 program ReLink translates is native, Env::IsNativeProgram)
+    // (hookshot: every NVN2 program Hookshot translates is native, Env::IsNativeProgram)
     info.native = pairing && GmNative() && env.IsNativeProgram();
     // (Lichii #410: the global memory functions that pick a buffer at run time need 64-bit integers)
     info.bind_competing = GmCompeting() && host_info.support_int64;
@@ -1692,7 +1698,7 @@ void GlobalMemoryToStorageBufferPass(Environment& env, IR::Program& program,
         }
     }};
     collect();
-    // (relink, as Lichii #421) The candidates bound together, and the tracked sides of split accesses, must leave room for
+    // (hookshot, as Lichii #421) The candidates bound together, and the tracked sides of split accesses, must leave room for
     // what translate_program.cpp adds after this pass (up to 16 NVN slots, the tables, the pointer table, the miss log):
     // past it the descriptors' static_vector threw bad_alloc. Collected again without them: those accesses are left to
     // the run-time search unbound.

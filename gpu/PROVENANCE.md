@@ -25,6 +25,24 @@ mkw-recomp's changes, for the Switch 2:
 - **The window crop** (`rx_present_crop`): MKW renders at a dynamic size into a 3840x2160 window texture and crops
   it; the crop is copied out and presented.
 
-`mkw_gpu.cpp` / `mkw_gpu.h` / `build-gpu.bat` are the earlier Vulkan stand-in (a window and a swapchain; no longer
-loaded). `shadertool.cpp` runs dumped NVN2 programs through Eglantine's recompiler offline (SPIR-V; it prints what
-each program reads from the constant banks).
+The renderer the game uses is no longer this one but the Vulkan back end in `vk/` (`vk/VULKAN.md`). This one was
+the Windows fallback in builds made with wgpu-native until 2026-11-14, when it stopped being built and its sources
+(`render/*.cpp`, `rx_internal.h`, `rx_web_mt.h`, `rx_bcn.h`, `rx_wgpu_names.h`, `renderdoc_app.h`) were removed: the
+paths above name them as they were. `render/` keeps the headers the host and the Vulkan back end use (`rx.h`,
+`rx_nvn.h`, `nvn_api.h`); `third_party/suyu/` is kept whole (the Vulkan back end compiles its texture decoders; the
+rest, the WGSL recompiler among it, is no longer compiled). mkw-recomp's earlier Vulkan stand-in
+(`mkw_gpu.cpp`, `build-gpu.bat`) did not come over. `shadertool.cpp` (built by `build-shadertool.bat` against the
+Eglantine clone) runs dumped NVN2 programs through Eglantine's recompiler offline (SPIR-V; it prints what each program
+reads from the constant banks).
+
+Hookshot's AMD FSR 4 (`vk/vk_fsr4.cpp`) was first written for Lichii's OoT branch (madebyjordan/Lichii-Hyrule,
+`renderer_vulkan/vk_fsr4_upscaler.cpp`; GPL-3.0-or-later), with its Linux path (a Vulkan FSR 4 library through dlopen) by
+N3oTraX. It draws with the frame chain of hckrman101's NVIDIA DLSS (#841), moved into `vk/vk_temporal.cpp` so both
+upscalers share it. `third_party/fidelityfx/` is AMD's FSR API headers from FidelityFX SDK v2.4.0 (MIT, `LICENSE.md`);
+AMD's signed DLLs are loaded from the user's PC at run time and are not vendored.
+
+The HDR tone mapper's PsychoV35 (`vk/eden/shader_recompiler/ir_opt/psychov35.h`) is the scene tone map of ShortFuse's RenoDX
+mod for this game (clshortfuse/renodx, `src/games/zelda-oot-oz/scene_tonemap.slangi`, and Carlos Lopez's
+`src/shaders/tonemap/psychov/test35.hlsl`; MIT, `ir_opt/LICENSE-renodx.md`; `tests/test_psychov35.py`'s reference is a
+port of the same files under it), reduced to the path the mod takes at its defaults and written over the IR
+emitter. `ir_opt/scene_tonemap_pass.h`, which finds the game's fit in the IR and puts it there, is Hookshot's.

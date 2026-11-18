@@ -1,4 +1,4 @@
-/* (relink) setjmp / longjmp in lifted code.
+/* (hookshot) setjmp / longjmp in lifted code.
 
    The guest's __setjmp and longjmp (sdk+0xaec40 / +0xaed50, musl's with pointer-auth hashes) run as lifted code and
    save and restore the guest registers themselves. What lifting breaks is longjmp's last instruction, BR x30 to the
@@ -185,6 +185,6 @@ void hos_setjmp_return(Ctx *c, uint64_t target) {
    BL longjmp: the text box thread's "branch to a non-function") */
 void a64_ijump_hook(Ctx *c, uint64_t target) { hos_setjmp_return(c, target); }
 
-/* (relink) the same pair for the host's own use: recomp_sj_setjmp(buf) with a buf of 32 pointers, then this from anywhere
+/* (hookshot) the same pair for the host's own use: recomp_sj_setjmp(buf) with a buf of 32 pointers, then this from anywhere
    below it on the same thread (the sampler's guarded stack walk, mkw_glue.c sample_walk) */
 __attribute__((noreturn)) void hos_sj_longjmp(void **buf, int value) { recomp_sj_longjmp(buf, value); }
