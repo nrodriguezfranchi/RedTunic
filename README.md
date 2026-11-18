@@ -1,23 +1,13 @@
-# Project ReLink
-
-<a href="https://recomplauncher.com"><picture><source media="(prefers-color-scheme: dark)" srcset="https://recomplauncher.com/assets/press/launcher/badge-light.svg"><img alt="Get it on RecompLauncher" src="https://recomplauncher.com/assets/press/launcher/badge-dark.svg" height="48"></picture></a>
+# Red Tunic
 
 **Zelda OOT Remake Recomp.** An unofficial static recompilation of *The Legend of Zelda: Ocarina of Time* (the Switch 2
-remake) into a native Windows game: the game's code is translated to PC code and compiled on your machine, with no emulator.
-
-[Français plus bas](#français)
-
-**Discord:** [join the Project ReLink server](https://discord.gg/RFNUtCQk8j) to ask questions, get help and follow new
-versions. Bugs are still best reported as [issues](https://github.com/pixl27/ProjectReLink/issues) with `relink_log.txt`
-attached, so they don't get lost.
-
-![The Project ReLink launcher](docs/launcher.png)
+remake) into a native Windows game: the game's code is translated to PC code and compiled on your machine, with no emulator. This is specifically optimised for performance, stability and rendering on AMD systems and AMD Radeon GPUs.
 
 **No game files are in this repository.** ReLink builds the game on your PC from your own copy.
 
 ## The game version you need
 
-ReLink works with **one version of the game**: the Switch 2 remake with its update installed.
+Red Tunic works with **one version of the game**: the Switch 2 remake with its update installed.
 
 | | |
 |---|---|
