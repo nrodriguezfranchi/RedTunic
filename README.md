@@ -1,4 +1,4 @@
-<img width="627" height="627" alt="RedTunicAMD" src="https://github.com/user-attachments/assets/de0fc6c1-cd8c-46aa-8c7f-a68af47a372c" />
+<img width="313" height="313" alt="RedTunicAMD" src="https://github.com/user-attachments/assets/de0fc6c1-cd8c-46aa-8c7f-a68af47a372c" />
 
 # Red Tunic
 
