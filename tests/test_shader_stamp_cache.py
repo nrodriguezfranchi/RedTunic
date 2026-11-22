@@ -74,6 +74,7 @@ class ShaderStampCacheTests(unittest.TestCase):
             "gpu/third_party/suyu/video_core/textures/texture.h": "struct Texture {};\n",
             "host/posix/windows.h": "struct Posix {};\n",
             "host/posix/win32_posix.c": "int win32;\n",
+            "host/posix/gdi_posix.c": "int gdi;\n",
             "gen/ui_fonts.cpp": "int fonts;\n",
             "third_party/imgui/imgui.h": "struct ImGui {};\n",
             "third_party/imgui/backends/imgui_impl_vulkan.h": "struct ImGuiVulkan {};\n",

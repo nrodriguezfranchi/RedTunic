@@ -19,6 +19,7 @@ WANT = {
     "licenses/zstd/PROVENANCE.md": "third_party/zstd/PROVENANCE.md",
     "licenses/libertinus/OFL.txt": "third_party/fonts/libertinus/OFL.txt",
     "licenses/libertinus/PROVENANCE.md": "third_party/fonts/PROVENANCE.md",
+    "licenses/stb/PROVENANCE.md": "third_party/stb/PROVENANCE.md",
 }
 
 
@@ -46,7 +47,7 @@ class AppImageLicences(unittest.TestCase):
     def test_vk_third_party_covered(self):
         # (every third_party folder the Vulkan back end compiles in, from nx2/build.py, has its licence shipped)
         build = (ROOT / "nx2/build.py").read_text(encoding="utf-8") + (ROOT / "nx2/ui_fonts.py").read_text(encoding="utf-8")
-        for part, licence in (("imgui", "licenses/imgui/"), ("zstd", "licenses/zstd/"), ("fonts", "licenses/libertinus/")):
+        for part, licence in (("imgui", "licenses/imgui/"), ("zstd", "licenses/zstd/"), ("fonts", "licenses/libertinus/"), ("stb", "licenses/stb/")):
             if '"third_party", "%s"' % part in build:
                 self.assertTrue(any(k.startswith(licence) for k in WANT), part)
 

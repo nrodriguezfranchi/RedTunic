@@ -2010,10 +2010,11 @@ def main():
             vk_jobs.append((cxx, os.path.join(vk, NGX_MSVC_RT), os.path.join(obj_dir, "vk_ngx_msvc_rt.o"), vflags + ngx_flags, vdeps))
             vk_jobs.append((cc, os.path.join(HOST, "mingw_msvc_shims.c"), os.path.join(obj_dir, "vk_ngx_mingw_msvc_shims.o"),
                             target() + ["-O2", "-g0", "-Wno-everything"], b""))
-        if LINUX:   # (its own copy of the Win32 calls on POSIX)
-            cflags = target() + CPU + ["-fPIC", "-O2", "-g0", "-Wno-everything", "-D_GNU_SOURCE", "-I" + POSIX]
+        if LINUX:   # (its own copy of the Win32 calls on POSIX, and the bit of GDI the item wheel draws its labels with)
+            cflags = target() + CPU + ["-fPIC", "-O2", "-g0", "-Wno-everything", "-D_GNU_SOURCE", "-I" + POSIX,
+                                       "-I" + os.path.join(kit.HERE, "..", "third_party", "stb")]
             pdeps = tree_headers(POSIX)
-            for f in ("win32_posix.c",):
+            for f in ("win32_posix.c", "gdi_posix.c"):
                 vk_jobs.append((cc, os.path.join(POSIX, f), os.path.join(obj_dir, "vk_posix_" + f[:-2] + ".o"), cflags, pdeps))
         if vk_pgo == "gen":   # (the counters' writer, the module's own copy: the sections it reads are the module's)
             vk_jobs.append((cc, os.path.join(HOST, "pgo_rt.c"), os.path.join(obj_dir, "vk_pgo_rt.o"),

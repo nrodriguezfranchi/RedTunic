@@ -56,7 +56,7 @@ cp -a third_party/kenney_input_keyboard "$T/third_party/"
 mkdir -p "$T/scripts"
 cp scripts/ngx_sdk.py "$T/scripts/"
 cp -a gpu/vk gpu/compat gpu/third_party "$T/gpu/"
-cp -a third_party/imgui third_party/zstd third_party/fonts "$T/third_party/"
+cp -a third_party/imgui third_party/zstd third_party/fonts third_party/stb "$T/third_party/"   # (stb: gdi_posix.c, the item wheel's labels)
 mkdir -p "$T/third_party/zbic" "$T/third_party/a64-kit"
 # (the whole folder, not only its prebuilt helper: the player's build compiles the back end from the sources inside the
 # read-only image and reads third_party/zbic's zstd.c, zstd.h and zstd_errors.h for its vk_zstd.o; shipping only zbic.so
@@ -91,11 +91,12 @@ for d in "$DEPS"/cpm/*/*; do
 done
 cp -a "$DEPS/licenses" "$T/licenses"   # (LLVM, FFmpeg, dav1d, SDL2: what this AppImage carries besides Hookshot)
 # ---- the licences of the third-party parts compiled into hookshot_vk.so (tests/test_appimage_licenses.py) ----
-mkdir -p "$T/licenses/imgui" "$T/licenses/zstd" "$T/licenses/libertinus" "$T/licenses/fidelityfx"
+mkdir -p "$T/licenses/imgui" "$T/licenses/zstd" "$T/licenses/libertinus" "$T/licenses/fidelityfx" "$T/licenses/stb"
 cp third_party/imgui/LICENSE.txt third_party/imgui/PROVENANCE.md "$T/licenses/imgui/"
 cp third_party/zstd/LICENSE third_party/zstd/PROVENANCE.md "$T/licenses/zstd/"
 cp third_party/fonts/libertinus/OFL.txt third_party/fonts/PROVENANCE.md "$T/licenses/libertinus/"
 cp third_party/fidelityfx/LICENSE.md third_party/fidelityfx/PROVENANCE.md "$T/licenses/fidelityfx/"   # (with AMD FSR 4)
+cp third_party/stb/PROVENANCE.md "$T/licenses/stb/"   # (stb_truetype: public domain or MIT, the licence at the end of the header)
 # ---- end of the licences ----
 
 # the sysroot: this system's C library (headers, start files, the libraries to link against) and GCC's runtime pieces
